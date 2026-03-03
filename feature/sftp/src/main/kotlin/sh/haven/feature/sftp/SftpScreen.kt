@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Cable
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
@@ -54,13 +55,17 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -126,6 +131,8 @@ fun SftpScreen(
         pendingDownload = null
     }
 
+    val clipboardManager = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
     var showSortMenu by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -241,6 +248,12 @@ fun SftpScreen(
                                     downloadLauncher.launch(entry.name)
                                 },
                                 onDelete = { viewModel.deleteEntry(entry) },
+                                onCopyPath = {
+                                    clipboardManager.setText(AnnotatedString(entry.path))
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar("Path copied")
+                                    }
+                                },
                             )
                         }
                     }
@@ -257,6 +270,7 @@ private fun FileListItem(
     onTap: () -> Unit,
     onDownload: () -> Unit,
     onDelete: () -> Unit,
+    onCopyPath: () -> Unit,
 ) {
     val context = LocalContext.current
     var showMenu by remember { mutableStateOf(false) }
@@ -299,6 +313,11 @@ private fun FileListItem(
                     onClick = { showMenu = false; onDownload() },
                 )
             }
+            DropdownMenuItem(
+                text = { Text("Copy path") },
+                leadingIcon = { Icon(Icons.Filled.ContentCopy, null) },
+                onClick = { showMenu = false; onCopyPath() },
+            )
             DropdownMenuItem(
                 text = { Text("Delete") },
                 leadingIcon = { Icon(Icons.Filled.Delete, null) },
