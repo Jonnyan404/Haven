@@ -28,15 +28,16 @@ class SshClient : Closeable {
     /**
      * Connect to an SSH server using the given config.
      * This suspends on Dispatchers.IO.
+     * Returns the host key as a [KnownHostEntry] for TOFU verification.
      */
     suspend fun connect(
         config: ConnectionConfig,
         connectTimeoutMs: Int = 10_000,
-    ) = withContext(Dispatchers.IO) {
+    ): KnownHostEntry = withContext(Dispatchers.IO) {
         disconnect()
 
         val sess = jsch.getSession(config.username, config.host, config.port)
-        // TODO(M5): implement proper known hosts verification with KnownHost entity
+        // Accept any key at the JSch level; we verify post-connect ourselves (TOFU)
         sess.setConfig("StrictHostKeyChecking", "no")
         sess.serverAliveInterval = 15_000
         sess.serverAliveCountMax = 3
@@ -57,6 +58,7 @@ class SshClient : Closeable {
 
         sess.connect(connectTimeoutMs)
         session = sess
+        extractHostKey(sess, config.host, config.port)
     }
 
     /**
@@ -128,8 +130,9 @@ class SshClient : Closeable {
     /**
      * Connect synchronously (for use on background threads like reconnect).
      * Same as [connect] but without the coroutine wrapper.
+     * Returns the host key as a [KnownHostEntry] for TOFU verification.
      */
-    fun connectBlocking(config: ConnectionConfig, connectTimeoutMs: Int = 10_000) {
+    fun connectBlocking(config: ConnectionConfig, connectTimeoutMs: Int = 10_000): KnownHostEntry {
         disconnect()
 
         val sess = jsch.getSession(config.username, config.host, config.port)
@@ -153,6 +156,18 @@ class SshClient : Closeable {
 
         sess.connect(connectTimeoutMs)
         session = sess
+        return extractHostKey(sess, config.host, config.port)
+    }
+
+    private fun extractHostKey(sess: Session, host: String, port: Int): KnownHostEntry {
+        val hk = sess.hostKey
+        return KnownHostEntry(
+            hostname = host,
+            port = port,
+            keyType = hk.type,
+            // JSch HostKey.getKey() returns the base64-encoded public key
+            publicKeyBase64 = hk.key,
+        )
     }
 
     /**

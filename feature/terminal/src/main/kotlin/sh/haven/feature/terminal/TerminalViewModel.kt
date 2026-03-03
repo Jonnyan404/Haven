@@ -14,6 +14,8 @@ import kotlinx.coroutines.withContext
 import org.connectbot.terminal.TerminalEmulator
 import org.connectbot.terminal.TerminalEmulatorFactory
 import sh.haven.core.ssh.ConnectionConfig
+import sh.haven.core.ssh.HostKeyResult
+import sh.haven.core.ssh.HostKeyVerifier
 import sh.haven.core.ssh.SessionManager
 import sh.haven.core.ssh.SshClient
 import sh.haven.core.ssh.SshSessionManager
@@ -97,6 +99,7 @@ data class TerminalTab(
 class TerminalViewModel @Inject constructor(
     private val sessionManager: SshSessionManager,
     private val reticulumSessionManager: ReticulumSessionManager,
+    private val hostKeyVerifier: HostKeyVerifier,
 ) : ViewModel() {
 
     private val _tabs = MutableStateFlow<List<TerminalTab>>(emptyList())
@@ -400,9 +403,25 @@ class TerminalViewModel @Inject constructor(
                 val client = SshClient()
                 val sessionId = sessionManager.registerSession(profileId, label, client)
 
-                withContext(Dispatchers.IO) {
+                val hostKeyEntry = withContext(Dispatchers.IO) {
                     client.connect(config)
                 }
+
+                // Silent TOFU: auto-accept new hosts, reject key changes
+                when (val hkResult = hostKeyVerifier.verify(hostKeyEntry)) {
+                    is HostKeyResult.Trusted -> { /* matches — continue */ }
+                    is HostKeyResult.NewHost -> {
+                        hostKeyVerifier.accept(hkResult.entry)
+                    }
+                    is HostKeyResult.KeyChanged -> {
+                        client.disconnect()
+                        sessionManager.removeSession(sessionId)
+                        Log.w(TAG, "Host key changed for ${config.host}:${config.port} — aborting new tab")
+                        _newTabLoading.value = false
+                        return@launch
+                    }
+                }
+
                 sessionManager.storeConnectionConfig(sessionId, config, sshSessionMgr)
 
                 val listCmd = sshSessionMgr.listCommand

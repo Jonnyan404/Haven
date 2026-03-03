@@ -80,6 +80,7 @@ fun ConnectionsScreen(
     val deploySuccess by viewModel.deploySuccess.collectAsState()
     val sessionSelection by viewModel.sessionSelection.collectAsState()
     val passwordFallback by viewModel.passwordFallback.collectAsState()
+    val hostKeyPrompt by viewModel.hostKeyPrompt.collectAsState()
 
     LaunchedEffect(navigateToTerminal) {
         navigateToTerminal?.let { profileId ->
@@ -163,6 +164,26 @@ fun ConnectionsScreen(
                 viewModel.dismissPasswordFallback()
             },
         )
+    }
+
+    hostKeyPrompt?.let { prompt ->
+        when (prompt) {
+            is ConnectionsViewModel.HostKeyPrompt.NewHost -> {
+                NewHostKeyDialog(
+                    entry = prompt.entry,
+                    onTrust = { viewModel.onHostKeyAccepted() },
+                    onCancel = { viewModel.onHostKeyRejected() },
+                )
+            }
+            is ConnectionsViewModel.HostKeyPrompt.KeyChanged -> {
+                KeyChangedDialog(
+                    oldFingerprint = prompt.oldFingerprint,
+                    entry = prompt.entry,
+                    onAccept = { viewModel.onHostKeyAccepted() },
+                    onDisconnect = { viewModel.onHostKeyRejected() },
+                )
+            }
+        }
     }
 
     deployingProfile?.let { profile ->

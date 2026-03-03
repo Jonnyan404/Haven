@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.runBlocking
 import java.util.UUID
 import java.util.concurrent.Executors
 import javax.inject.Inject
@@ -20,7 +21,9 @@ private const val TAG = "SshSessionManager"
  * Multiple sessions may share the same profileId (multi-tab).
  */
 @Singleton
-class SshSessionManager @Inject constructor() {
+class SshSessionManager @Inject constructor(
+    private val hostKeyVerifier: HostKeyVerifier,
+) {
 
     data class SessionState(
         val sessionId: String,
@@ -211,7 +214,22 @@ class SshSessionManager @Inject constructor() {
 
             try {
                 val newClient = SshClient()
-                newClient.connectBlocking(config)
+                val hostKeyEntry = newClient.connectBlocking(config)
+
+                // Silent TOFU on reconnect: auto-accept new, abort on change
+                val hkResult = runBlocking { hostKeyVerifier.verify(hostKeyEntry) }
+                when (hkResult) {
+                    is HostKeyResult.Trusted -> { /* matches — continue */ }
+                    is HostKeyResult.NewHost -> {
+                        runBlocking { hostKeyVerifier.accept(hkResult.entry) }
+                    }
+                    is HostKeyResult.KeyChanged -> {
+                        Log.w(TAG, "Host key changed during reconnect for $sessionId — aborting")
+                        newClient.disconnect()
+                        updateStatus(sessionId, SessionState.Status.ERROR)
+                        return
+                    }
+                }
 
                 // Update session state with new client
                 _sessions.update { map ->

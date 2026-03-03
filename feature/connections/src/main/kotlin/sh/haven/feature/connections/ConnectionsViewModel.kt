@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -25,10 +26,14 @@ import sh.haven.core.data.preferences.UserPreferencesRepository
 import sh.haven.core.data.repository.ConnectionRepository
 import sh.haven.core.data.repository.SshKeyRepository
 import sh.haven.core.ssh.ConnectionConfig
+import sh.haven.core.ssh.HostKeyResult
+import sh.haven.core.ssh.HostKeyVerifier
+import sh.haven.core.ssh.KnownHostEntry
 import sh.haven.core.ssh.SshClient
 import sh.haven.core.ssh.SshConnectionService
 import sh.haven.core.ssh.SessionManager
 import sh.haven.core.ssh.SshSessionManager
+import sh.haven.core.data.db.entities.KnownHost
 import sh.haven.core.reticulum.ReticulumBridge
 import sh.haven.core.reticulum.ReticulumSessionManager
 import android.util.Log
@@ -50,6 +55,7 @@ class ConnectionsViewModel @Inject constructor(
     private val reticulumBridge: ReticulumBridge,
     private val sshKeyRepository: SshKeyRepository,
     private val preferencesRepository: UserPreferencesRepository,
+    private val hostKeyVerifier: HostKeyVerifier,
 ) : ViewModel() {
 
     val connections: StateFlow<List<ConnectionProfile>> = repository.observeAll()
@@ -109,6 +115,33 @@ class ConnectionsViewModel @Inject constructor(
     /** When non-null, key auth failed and the UI should show a password dialog as fallback. */
     private val _passwordFallback = MutableStateFlow<ConnectionProfile?>(null)
     val passwordFallback: StateFlow<ConnectionProfile?> = _passwordFallback.asStateFlow()
+
+    sealed class HostKeyPrompt {
+        data class NewHost(
+            val entry: KnownHostEntry,
+            val deferred: kotlinx.coroutines.CompletableDeferred<Boolean>,
+        ) : HostKeyPrompt()
+        data class KeyChanged(
+            val oldFingerprint: String,
+            val entry: KnownHostEntry,
+            val deferred: kotlinx.coroutines.CompletableDeferred<Boolean>,
+        ) : HostKeyPrompt()
+    }
+
+    private val _hostKeyPrompt = MutableStateFlow<HostKeyPrompt?>(null)
+    val hostKeyPrompt: StateFlow<HostKeyPrompt?> = _hostKeyPrompt.asStateFlow()
+
+    fun onHostKeyAccepted() {
+        (_hostKeyPrompt.value as? HostKeyPrompt.NewHost)?.deferred?.complete(true)
+        (_hostKeyPrompt.value as? HostKeyPrompt.KeyChanged)?.deferred?.complete(true)
+        _hostKeyPrompt.value = null
+    }
+
+    fun onHostKeyRejected() {
+        (_hostKeyPrompt.value as? HostKeyPrompt.NewHost)?.deferred?.complete(false)
+        (_hostKeyPrompt.value as? HostKeyPrompt.KeyChanged)?.deferred?.complete(false)
+        _hostKeyPrompt.value = null
+    }
 
     /** Emitted once after a successful connect to trigger navigation to terminal (profileId). */
     private val _navigateToTerminal = MutableStateFlow<String?>(null)
@@ -259,7 +292,35 @@ class ConnectionsViewModel @Inject constructor(
                         username = profile.username,
                         authMethod = authMethod,
                     )
-                    client.connect(config)
+                    val hostKeyEntry = client.connect(config)
+
+                    // TOFU host key verification
+                    when (val result = hostKeyVerifier.verify(hostKeyEntry)) {
+                        is HostKeyResult.Trusted -> { /* key matches — continue */ }
+                        is HostKeyResult.NewHost -> {
+                            val deferred = CompletableDeferred<Boolean>()
+                            _hostKeyPrompt.value = HostKeyPrompt.NewHost(result.entry, deferred)
+                            if (!deferred.await()) {
+                                client.disconnect()
+                                throw Exception("Host key rejected by user")
+                            }
+                            hostKeyVerifier.accept(result.entry)
+                        }
+                        is HostKeyResult.KeyChanged -> {
+                            val deferred = CompletableDeferred<Boolean>()
+                            _hostKeyPrompt.value = HostKeyPrompt.KeyChanged(
+                                oldFingerprint = result.old.fingerprint,
+                                entry = result.new,
+                                deferred = deferred,
+                            )
+                            if (!deferred.await()) {
+                                client.disconnect()
+                                throw Exception("Host key change rejected by user")
+                            }
+                            hostKeyVerifier.accept(result.new)
+                        }
+                    }
+
                     val prefSessionMgr = preferencesRepository.sessionManager.first()
                     val sshSessionMgr = prefSessionMgr.toSshSessionManager()
                     sshSessionManager.storeConnectionConfig(sessionId, config, sshSessionMgr)
@@ -564,7 +625,36 @@ class ConnectionsViewModel @Inject constructor(
                     username = profile.username,
                     authMethod = ConnectionConfig.AuthMethod.Password(password),
                 )
-                client.connect(config)
+                val hostKeyEntry = client.connect(config)
+
+                // TOFU host key verification for deploy
+                when (val result = hostKeyVerifier.verify(hostKeyEntry)) {
+                    is HostKeyResult.Trusted -> { /* key matches — continue */ }
+                    is HostKeyResult.NewHost -> {
+                        val deferred = CompletableDeferred<Boolean>()
+                        _hostKeyPrompt.value = HostKeyPrompt.NewHost(result.entry, deferred)
+                        if (!deferred.await()) {
+                            client.disconnect()
+                            _error.value = "Host key rejected"
+                            return@launch
+                        }
+                        hostKeyVerifier.accept(result.entry)
+                    }
+                    is HostKeyResult.KeyChanged -> {
+                        val deferred = CompletableDeferred<Boolean>()
+                        _hostKeyPrompt.value = HostKeyPrompt.KeyChanged(
+                            oldFingerprint = result.old.fingerprint,
+                            entry = result.new,
+                            deferred = deferred,
+                        )
+                        if (!deferred.await()) {
+                            client.disconnect()
+                            _error.value = "Host key change rejected"
+                            return@launch
+                        }
+                        hostKeyVerifier.accept(result.new)
+                    }
+                }
 
                 val pubKey = key.publicKeyOpenSsh.trim()
                 val command = "mkdir -p ~/.ssh && chmod 700 ~/.ssh && " +
