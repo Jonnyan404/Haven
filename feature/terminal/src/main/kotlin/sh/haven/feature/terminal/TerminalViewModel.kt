@@ -28,6 +28,9 @@ import javax.inject.Inject
 
 private const val TAG = "TerminalViewModel"
 
+/** Main-thread handler for posting emulator writes. */
+private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
 /**
  * Coalesces rapid single-byte inputs into a batch, then deduplicates only
  * the exact IME double-fire pattern (buffer == [X, X]).
@@ -263,7 +266,12 @@ class TerminalViewModel @Inject constructor(
                 onDataReceived = { data, offset, length ->
                     oscHandler.process(data, offset, length)
                     mouseTracker.process(oscHandler.outputBuf, 0, oscHandler.outputLen)
-                    emulator.writeInput(oscHandler.outputBuf, 0, oscHandler.outputLen)
+                    val len = oscHandler.outputLen
+                    if (len > 0) {
+                        val copy = ByteArray(len)
+                        System.arraycopy(oscHandler.outputBuf, 0, copy, 0, len)
+                        mainHandler.post { emulator.writeInput(copy, 0, copy.size) }
+                    }
                 },
             ) ?: continue
 
@@ -323,7 +331,12 @@ class TerminalViewModel @Inject constructor(
                 onDataReceived = { data, offset, length ->
                     rnsOscHandler.process(data, offset, length)
                     rnsMouseTracker.process(rnsOscHandler.outputBuf, 0, rnsOscHandler.outputLen)
-                    emulator.writeInput(rnsOscHandler.outputBuf, 0, rnsOscHandler.outputLen)
+                    val len = rnsOscHandler.outputLen
+                    if (len > 0) {
+                        val copy = ByteArray(len)
+                        System.arraycopy(rnsOscHandler.outputBuf, 0, copy, 0, len)
+                        mainHandler.post { emulator.writeInput(copy, 0, copy.size) }
+                    }
                 },
             ) ?: continue
 
