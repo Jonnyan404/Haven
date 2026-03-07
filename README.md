@@ -5,7 +5,7 @@
 <h1 align="center">Haven</h1>
 
 <p align="center">
-  SSH &amp; SFTP client for Android
+  Free SSH &amp; SFTP client for Android
 </p>
 
 <p align="center">
@@ -16,9 +16,8 @@
 </p>
 
 <p align="center">
-  <a href="https://play.google.com/store/apps/details?id=sh.haven.app">Google Play</a> &bull;
-  <a href="https://f-droid.org">F-Droid</a> &bull;
-  <a href="https://github.com/GlassOnTin/Haven/releases/latest">GitHub Releases</a>
+  <a href="https://github.com/GlassOnTin/Haven/releases/latest">GitHub Releases</a> &bull;
+  <a href="https://f-droid.org">F-Droid</a>
 </p>
 
 ---
@@ -68,9 +67,8 @@ Notifications appear as a toast in the foreground or as an Android notification 
 
 | Channel | |
 |---|---|
-| [Google Play](https://play.google.com/store/apps/details?id=sh.haven.app) | Paid, auto-updates |
-| [F-Droid](https://f-droid.org) | Free, built from source |
 | [GitHub Releases](https://github.com/GlassOnTin/Haven/releases/latest) | Free, signed APK |
+| [F-Droid](https://f-droid.org) | Free, built from source |
 
 ### Build from source
 
