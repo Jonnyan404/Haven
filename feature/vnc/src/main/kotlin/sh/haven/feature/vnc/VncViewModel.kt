@@ -14,6 +14,13 @@ import sh.haven.core.ssh.SshSessionManager
 import sh.haven.core.vnc.ColorDepth
 import sh.haven.core.vnc.VncClient
 import sh.haven.core.vnc.VncConfig
+import sh.haven.core.vnc.protocol.AuthenticationFailedException
+import sh.haven.core.vnc.protocol.HandshakingFailedException
+import sh.haven.core.vnc.protocol.VncException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import javax.inject.Inject
 
 private const val TAG = "VncViewModel"
@@ -70,17 +77,17 @@ class VncViewModel @Inject constructor(
             try {
                 _error.value = null
                 val session = sshSessionManager.getSession(sessionId)
-                    ?: throw IllegalStateException("SSH session not found")
+                    ?: throw IllegalStateException("SSH session not found. Return to the Terminal tab and check the connection is still active.")
                 val localPort = session.client.setPortForwardingL(
                     "127.0.0.1", 0, remoteHost, remotePort,
                 )
                 tunnelPort = localPort
                 tunnelSessionId = sessionId
                 Log.d(TAG, "SSH tunnel: localhost:$localPort -> $remoteHost:$remotePort")
-                doConnect("127.0.0.1", localPort, password)
+                doConnect("127.0.0.1", localPort, password, remoteHost, remotePort)
             } catch (e: Exception) {
                 Log.e(TAG, "SSH tunnel setup failed", e)
-                _error.value = e.message ?: "SSH tunnel failed"
+                _error.value = describeError(e, remoteHost, remotePort)
             }
         }
     }
@@ -89,15 +96,18 @@ class VncViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 _error.value = null
-                doConnect(host, port, password)
+                doConnect(host, port, password, host, port)
             } catch (e: Exception) {
                 Log.e(TAG, "VNC connect failed", e)
-                _error.value = e.message ?: "Connection failed"
+                _error.value = describeError(e, host, port)
             }
         }
     }
 
-    private fun doConnect(host: String, port: Int, password: String?) {
+    private fun doConnect(
+        host: String, port: Int, password: String?,
+        displayHost: String? = null, displayPort: Int? = null,
+    ) {
         val config = VncConfig().apply {
             colorDepth = ColorDepth.BPP_24_TRUE
             targetFps = 10
@@ -110,7 +120,7 @@ class VncViewModel @Inject constructor(
             }
             onError = { e ->
                 Log.e(TAG, "VNC error", e)
-                _error.value = e.message ?: "VNC error"
+                _error.value = describeError(e, displayHost ?: host, displayPort ?: port)
                 _connected.value = false
             }
             onRemoteClipboard = { text ->
@@ -184,5 +194,74 @@ class VncViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         disconnect()
+    }
+
+    companion object {
+        /** Map VNC/network exceptions to user-friendly messages with troubleshooting hints. */
+        fun describeError(e: Exception, host: String? = null, port: Int? = null): String {
+            val portStr = port?.toString() ?: "5900"
+            val hostStr = host ?: "the remote host"
+            return when (e) {
+                is ConnectException -> buildString {
+                    append("Connection refused")
+                    if (e.message?.contains("refused", ignoreCase = true) == true) {
+                        append(". No VNC server appears to be listening on $hostStr:$portStr.\n\n")
+                        append("To start a VNC server on the remote host:\n")
+                        append("  TigerVNC:  vncserver :1\n")
+                        append("  x11vnc:    x11vnc -display :0 -rfbport $portStr\n")
+                        append("  wayvnc:    wayvnc 0.0.0.0 $portStr\n\n")
+                        append("Check: ss -tlnp | grep $portStr")
+                    }
+                }
+                is SocketTimeoutException -> buildString {
+                    append("Connection timed out reaching $hostStr:$portStr.\n\n")
+                    append("Check:\n")
+                    append("  - Host address is correct\n")
+                    append("  - Port $portStr is not blocked by a firewall\n")
+                    append("  - If tunneling through SSH, the SSH session is still connected")
+                }
+                is UnknownHostException ->
+                    "Could not resolve hostname \"$hostStr\". Check the address is correct."
+                is NoRouteToHostException ->
+                    "No route to $hostStr. Check your network connection and that the host is reachable."
+                is AuthenticationFailedException -> buildString {
+                    append("Authentication failed")
+                    val msg = e.message
+                    if (msg != null && msg != "Authentication failed") append(": $msg")
+                    append(".\n\n")
+                    append("Check your VNC password. VNC passwords are limited to 8 characters.\n")
+                    append("To reset: vncpasswd ~/.vnc/passwd")
+                }
+                is HandshakingFailedException -> buildString {
+                    append("VNC handshake failed: ${e.message}\n\n")
+                    append("This may indicate:\n")
+                    append("  - An incompatible VNC server version\n")
+                    append("  - Something other than a VNC server on port $portStr\n")
+                    append("  - A web-based VNC proxy (noVNC) instead of a raw VNC port")
+                }
+                is VncException -> buildString {
+                    val msg = e.message ?: "Unknown protocol error"
+                    append("VNC protocol error: $msg\n\n")
+                    if (msg.contains("encoding", ignoreCase = true)) {
+                        append("The server is using an encoding Haven doesn't support.\n")
+                        append("Try setting the server to use Raw or Hextile encoding.")
+                    } else if (msg.contains("Unexpected end", ignoreCase = true)) {
+                        append("The server closed the connection unexpectedly.\n")
+                        append("Check the VNC server logs on the remote host for errors.")
+                    }
+                }
+                is java.io.EOFException, is java.io.IOException -> {
+                    val msg = e.message ?: ""
+                    if (msg.contains("Broken pipe") || msg.contains("reset by peer") ||
+                        msg.contains("end of stream", ignoreCase = true) || e is java.io.EOFException
+                    ) {
+                        "Connection lost. The VNC server may have stopped or the network dropped."
+                    } else {
+                        "Network error: $msg"
+                    }
+                }
+                else -> e.message ?: "Unknown error"
+            }
+        }
     }
 }

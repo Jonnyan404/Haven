@@ -66,6 +66,9 @@ fun HavenNavHost(
     // Disable pager swipe while terminal text selection is active
     var terminalSelectionActive by remember { mutableStateOf(false) }
 
+    // VNC fullscreen hides bottom nav and system bars
+    var vncFullscreen by remember { mutableStateOf(false) }
+
     Scaffold(
         // Exclude IME from Scaffold's contentWindowInsets so that imePadding()
         // on the HorizontalPager can observe and apply keyboard insets directly.
@@ -73,18 +76,20 @@ fun HavenNavHost(
         // resize when the keyboard opens/closes.
         contentWindowInsets = ScaffoldDefaults.contentWindowInsets.exclude(WindowInsets.ime),
         bottomBar = {
-            NavigationBar {
-                screens.forEachIndexed { index, screen ->
-                    NavigationBarItem(
-                        icon = { Icon(screen.icon, contentDescription = screen.label) },
-                        label = { Text(screen.label) },
-                        selected = pagerState.currentPage == index,
-                        onClick = {
-                            coroutineScope.launch {
-                                pagerState.animateScrollToPage(index)
+            if (!vncFullscreen) {
+                NavigationBar {
+                    screens.forEachIndexed { index, screen ->
+                        NavigationBarItem(
+                            icon = { Icon(screen.icon, contentDescription = screen.label) },
+                            label = { Text(screen.label) },
+                            selected = pagerState.currentPage == index,
+                            onClick = {
+                                coroutineScope.launch {
+                                    pagerState.animateScrollToPage(index)
+                                }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
         }
@@ -154,6 +159,7 @@ fun HavenNavHost(
                         pendingVncSshForward = false
                         pendingVncSshSessionId = null
                     },
+                    onFullscreenChanged = { vncFullscreen = it },
                 )
                 Screen.Sftp -> SftpScreen()
                 Screen.Keys -> KeysScreen()

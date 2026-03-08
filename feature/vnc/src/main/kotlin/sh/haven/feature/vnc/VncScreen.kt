@@ -6,6 +6,13 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,17 +23,31 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.KeyboardHide
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -57,9 +78,14 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import kotlinx.coroutines.delay
 import kotlin.math.abs
 
 @Composable
@@ -71,15 +97,12 @@ fun VncScreen(
     pendingSshForward: Boolean = false,
     pendingSshSessionId: String? = null,
     onPendingConsumed: () -> Unit = {},
-    onConnectedChanged: (Boolean) -> Unit = {},
+    onFullscreenChanged: (Boolean) -> Unit = {},
     viewModel: VncViewModel = hiltViewModel(),
 ) {
     LaunchedEffect(isActive) { viewModel.setActive(isActive) }
 
     val connected by viewModel.connected.collectAsState()
-
-    // Report connected state to parent for pager swipe control
-    LaunchedEffect(connected) { onConnectedChanged(connected) }
 
     // Auto-connect when navigated from terminal
     LaunchedEffect(pendingHost) {
@@ -98,9 +121,46 @@ fun VncScreen(
     val frame by viewModel.frame.collectAsState()
     val error by viewModel.error.collectAsState()
 
+    // Manage system bars for fullscreen
+    var fullscreen by rememberSaveable { mutableStateOf(false) }
+    val view = LocalView.current
+    val window = (view.context as? android.app.Activity)?.window
+
+    // Notify parent and toggle system bars
+    LaunchedEffect(fullscreen) {
+        onFullscreenChanged(fullscreen)
+        if (window != null) {
+            val controller = WindowCompat.getInsetsController(window, view)
+            if (fullscreen) {
+                controller.hide(WindowInsetsCompat.Type.systemBars())
+                controller.systemBarsBehavior =
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            } else {
+                controller.show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+    }
+
+    // Exit fullscreen on disconnect
+    LaunchedEffect(connected) {
+        if (!connected && fullscreen) fullscreen = false
+    }
+
+    // Restore system bars if composable leaves composition while fullscreen
+    DisposableEffect(Unit) {
+        onDispose {
+            if (fullscreen && window != null) {
+                val controller = WindowCompat.getInsetsController(window, view)
+                controller.show(WindowInsetsCompat.Type.systemBars())
+                onFullscreenChanged(false)
+            }
+        }
+    }
+
     if (connected && frame != null) {
         VncViewer(
             frame = frame!!,
+            fullscreen = fullscreen,
             onTap = { x, y -> viewModel.sendClick(x, y) },
             onDragStart = { x, y ->
                 viewModel.sendPointer(x, y)
@@ -113,6 +173,7 @@ fun VncScreen(
             onTypeChar = { ch -> viewModel.typeKey(charToKeySym(ch)) },
             onKeyDown = { keySym -> viewModel.sendKey(keySym, true) },
             onKeyUp = { keySym -> viewModel.sendKey(keySym, false) },
+            onToggleFullscreen = { fullscreen = !fullscreen },
             onDisconnect = { viewModel.disconnect() },
         )
     } else {
@@ -142,14 +203,16 @@ private fun VncConnectForm(
     var password by rememberSaveable { mutableStateOf("") }
     var sshForward by rememberSaveable { mutableStateOf(false) }
     var selectedSshIndex by rememberSaveable { mutableStateOf(0) }
+    var showSetupHints by rememberSaveable { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Spacer(Modifier.height(48.dp))
+        Spacer(Modifier.height(32.dp))
         Text("VNC Connection", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(24.dp))
 
@@ -232,16 +295,89 @@ private fun VncConnectForm(
             Text("Connect")
         }
 
+        // Error display
         if (error != null) {
             Spacer(Modifier.height(16.dp))
-            Text(error, color = MaterialTheme.colorScheme.error)
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = error,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(12.dp),
+                )
+            }
+        }
+
+        // Setup hints
+        Spacer(Modifier.height(16.dp))
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .animateContentSize(),
+        ) {
+            TextButton(
+                onClick = { showSetupHints = !showSetupHints },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Server setup help")
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    if (showSetupHints) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            if (showSetupHints) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = SETUP_HINTS,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(12.dp),
+                    )
+                }
+            }
         }
     }
 }
 
+private const val SETUP_HINTS = """Quick start (run on the remote host):
+
+TigerVNC (recommended):
+  sudo apt install tigervnc-standalone-server
+  vncserver :1 -geometry 1920x1080 -depth 24
+  # Port: 5901 (5900 + display number)
+
+x11vnc (share existing desktop):
+  sudo apt install x11vnc
+  x11vnc -display :0 -rfbport 5900 -forever
+
+wayvnc (Wayland):
+  wayvnc 0.0.0.0 5900
+
+Verify the server is running:
+  ss -tlnp | grep 590
+
+Firewall (if not tunneling via SSH):
+  sudo ufw allow 5900/tcp
+
+Tip: Use "Tunnel through SSH" to avoid firewall
+issues and encrypt the connection. The VNC server
+only needs to listen on localhost in that case."""
+
 @Composable
 private fun VncViewer(
     frame: Bitmap,
+    fullscreen: Boolean,
     onTap: (Int, Int) -> Unit,
     onDragStart: (Int, Int) -> Unit,
     onDrag: (Int, Int) -> Unit,
@@ -251,6 +387,7 @@ private fun VncViewer(
     onTypeChar: (Char) -> Unit,
     onKeyDown: (Int) -> Unit,
     onKeyUp: (Int) -> Unit,
+    onToggleFullscreen: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
@@ -266,12 +403,24 @@ private fun VncViewer(
     val keyboardController = LocalSoftwareKeyboardController.current
     var keyboardVisible by remember { mutableStateOf(false) }
 
+    // Fullscreen overlay toolbar
+    var overlayVisible by remember { mutableStateOf(false) }
+
+    // Auto-hide overlay after 4 seconds
+    LaunchedEffect(overlayVisible) {
+        if (overlayVisible) {
+            delay(4000)
+            overlayVisible = false
+        }
+    }
+
     // Sentinel for the hidden text field — keep a space so backspace has something to delete
     val sentinel = " "
     var textFieldValue by remember {
         mutableStateOf(TextFieldValue(sentinel, TextRange(sentinel.length)))
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize()) {
         // VNC canvas
         Box(
@@ -437,50 +586,154 @@ private fun VncViewer(
                 },
         )
 
-        // Bottom toolbar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Button(onClick = onDisconnect) {
-                Text("Disconnect")
-            }
-
-            Spacer(Modifier.width(8.dp))
-
-            // Keyboard toggle
-            IconButton(onClick = {
-                keyboardVisible = !keyboardVisible
-                if (keyboardVisible) {
-                    focusRequester.requestFocus()
-                    keyboardController?.show()
-                } else {
-                    keyboardController?.hide()
+        // Bottom toolbar (hidden in fullscreen)
+        if (!fullscreen) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Button(onClick = onDisconnect) {
+                    Text("Disconnect")
                 }
-            }) {
+
+                Spacer(Modifier.width(8.dp))
+
+                // Keyboard toggle
+                IconButton(onClick = {
+                    keyboardVisible = !keyboardVisible
+                    if (keyboardVisible) {
+                        focusRequester.requestFocus()
+                        keyboardController?.show()
+                    } else {
+                        keyboardController?.hide()
+                    }
+                }) {
+                    Icon(
+                        if (keyboardVisible) Icons.Default.KeyboardHide
+                        else Icons.Default.Keyboard,
+                        contentDescription = "Toggle keyboard",
+                    )
+                }
+
+                Spacer(Modifier.weight(1f))
+
+                // Reset zoom button
+                if (zoom != 1f || panX != 0f || panY != 0f) {
+                    Button(onClick = {
+                        zoom = 1f
+                        panX = 0f
+                        panY = 0f
+                    }) {
+                        Text("Reset Zoom")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                }
+
+                // Fullscreen button
+                IconButton(onClick = onToggleFullscreen) {
+                    Icon(Icons.Default.Fullscreen, contentDescription = "Fullscreen")
+                }
+            }
+        }
+    } // end Column
+
+    // Fullscreen corner hotspot and overlay toolbar
+    if (fullscreen) {
+        // Dismiss scrim — rendered first so toolbar buttons are on top
+        if (overlayVisible) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { overlayVisible = false },
+            )
+        }
+
+        // Corner hotspot — top-right (visible when overlay is hidden)
+        AnimatedVisibility(
+            visible = !overlayVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.TopEnd),
+        ) {
+            Surface(
+                onClick = { overlayVisible = true },
+                shape = RoundedCornerShape(bottomStart = 12.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.4f),
+            ) {
                 Icon(
-                    if (keyboardVisible) Icons.Default.KeyboardHide
-                    else Icons.Default.Keyboard,
-                    contentDescription = "Toggle keyboard",
+                    Icons.Default.Menu,
+                    contentDescription = "Session menu",
+                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(8.dp).size(20.dp),
                 )
             }
+        }
 
-            Spacer(Modifier.weight(1f))
-
-            // Reset zoom button
-            if (zoom != 1f || panX != 0f || panY != 0f) {
-                Button(onClick = {
-                    zoom = 1f
-                    panX = 0f
-                    panY = 0f
-                }) {
-                    Text("Reset Zoom")
+        // Floating toolbar overlay — rendered last so it's on top of the dismiss scrim
+        AnimatedVisibility(
+            visible = overlayVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.TopEnd),
+        ) {
+            Surface(
+                shape = RoundedCornerShape(bottomStart = 16.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                shadowElevation = 8.dp,
+            ) {
+                Column(
+                    modifier = Modifier.padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    IconButton(onClick = {
+                        overlayVisible = false
+                        onDisconnect()
+                    }) {
+                        Icon(Icons.Default.Close, contentDescription = "Disconnect")
+                    }
+                    IconButton(onClick = {
+                        keyboardVisible = !keyboardVisible
+                        if (keyboardVisible) {
+                            focusRequester.requestFocus()
+                            keyboardController?.show()
+                        } else {
+                            keyboardController?.hide()
+                        }
+                    }) {
+                        Icon(
+                            if (keyboardVisible) Icons.Default.KeyboardHide
+                            else Icons.Default.Keyboard,
+                            contentDescription = "Toggle keyboard",
+                        )
+                    }
+                    if (zoom != 1f || panX != 0f || panY != 0f) {
+                        IconButton(onClick = {
+                            zoom = 1f
+                            panX = 0f
+                            panY = 0f
+                        }) {
+                            Icon(
+                                Icons.Default.FullscreenExit,
+                                contentDescription = "Reset zoom",
+                            )
+                        }
+                    }
+                    IconButton(onClick = {
+                        overlayVisible = false
+                        onToggleFullscreen()
+                    }) {
+                        Icon(Icons.Default.FullscreenExit, contentDescription = "Exit fullscreen")
+                    }
                 }
             }
         }
     }
+    } // end Box
 }
 
 private fun DrawScope.drawVncFrame(
