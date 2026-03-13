@@ -19,18 +19,17 @@ android {
         versionName = "2.0.13"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-
-        ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
-        }
     }
 
-    splits {
-        abi {
-            isEnable = true
-            reset()
-            include("arm64-v8a", "x86_64")
-            isUniversalApk = false
+    flavorDimensions += "abi"
+    productFlavors {
+        create("arm64") {
+            dimension = "abi"
+            ndk { abiFilters += "arm64-v8a" }
+        }
+        create("x64") {
+            dimension = "abi"
+            ndk { abiFilters += "x86_64" }
         }
     }
 
@@ -58,17 +57,17 @@ android {
         }
     }
 
-    val abiCodes = mapOf("arm64-v8a" to 1, "x86_64" to 2)
+    val abiCodes = mapOf("arm64" to 1, "x64" to 2)
 
     applicationVariants.all {
         val variant = this
+        val abiCode = abiCodes[variant.flavorName]
         outputs.all {
             val output = this as com.android.build.gradle.internal.api.ApkVariantOutputImpl
-            val abi = output.getFilter(com.android.build.OutputFile.ABI)
-            if (abi != null) {
-                output.versionCodeOverride = (defaultConfig.versionCode ?: 0) * 10 + (abiCodes[abi] ?: 0)
+            if (abiCode != null) {
+                output.versionCodeOverride = (defaultConfig.versionCode ?: 0) * 10 + abiCode
             }
-            output.outputFileName = "haven-${variant.versionName}-${abi ?: "universal"}-${variant.buildType.name}.apk"
+            output.outputFileName = "haven-${variant.versionName}-${variant.flavorName}-${variant.buildType.name}.apk"
         }
     }
 
@@ -88,6 +87,9 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "/META-INF/NOTICE.md"
             excludes += "/META-INF/LICENSE.md"
+        }
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 }

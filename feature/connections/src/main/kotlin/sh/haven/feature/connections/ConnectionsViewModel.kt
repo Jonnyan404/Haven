@@ -136,6 +136,15 @@ class ConnectionsViewModel @Inject constructor(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    private val _showMoshSetupGuide = MutableStateFlow(false)
+    val showMoshSetupGuide: StateFlow<Boolean> = _showMoshSetupGuide.asStateFlow()
+
+    private val _showMoshClientMissing = MutableStateFlow(false)
+    val showMoshClientMissing: StateFlow<Boolean> = _showMoshClientMissing.asStateFlow()
+
+    fun dismissMoshSetupGuide() { _showMoshSetupGuide.value = false }
+    fun dismissMoshClientMissing() { _showMoshClientMissing.value = false }
+
     /** When non-null, key auth failed and the UI should show a password dialog as fallback. */
     private val _passwordFallback = MutableStateFlow<ConnectionProfile?>(null)
     val passwordFallback: StateFlow<ConnectionProfile?> = _passwordFallback.asStateFlow()
@@ -182,10 +191,16 @@ class ConnectionsViewModel @Inject constructor(
         val managerLabel: String,
         val sessionNames: List<String>,
         val manager: SessionManager = SessionManager.NONE,
+        /** "SSH" or "MOSH" — determines which finish path onSessionSelected uses. */
+        val transportType: String = "SSH",
     )
 
     private val _sessionSelection = MutableStateFlow<SessionSelection?>(null)
     val sessionSelection: StateFlow<SessionSelection?> = _sessionSelection.asStateFlow()
+
+    /** SSH client + host kept alive during mosh session picker (for mosh-server exec). */
+    private var moshPendingClient: SshClient? = null
+    private var moshPendingHost: String? = null
 
     fun onNavigated() {
         _navigateToTerminal.value = null
@@ -524,8 +539,8 @@ class ConnectionsViewModel @Inject constructor(
             )
 
             try {
-                // Phase 1: SSH bootstrap — connect, exec mosh-server, parse MOSH CONNECT
-                val moshConnect = withContext(Dispatchers.IO) {
+                // Phase 1: SSH bootstrap — connect, resolve session manager, list sessions
+                val client = withContext(Dispatchers.IO) {
                     val authMethod = resolveAuthMethod(profile, password)
                     val config = ConnectionConfig(
                         host = profile.host,
@@ -535,7 +550,7 @@ class ConnectionsViewModel @Inject constructor(
                         sshOptions = ConnectionConfig.parseSshOptions(profile.sshOptions),
                     )
 
-                    val client = SshClient()
+                    val sshClient = SshClient()
 
                     // Jump host support
                     val jumpProfileId = profile.jumpProfileId
@@ -544,7 +559,7 @@ class ConnectionsViewModel @Inject constructor(
                         sshSessionManager.createProxyJump(jid)
                     } else null
 
-                    val hostKeyEntry = client.connect(config, proxy = proxy)
+                    val hostKeyEntry = sshClient.connect(config, proxy = proxy)
 
                     // TOFU host key verification
                     when (val result = hostKeyVerifier.verify(hostKeyEntry)) {
@@ -553,7 +568,7 @@ class ConnectionsViewModel @Inject constructor(
                             val deferred = CompletableDeferred<Boolean>()
                             _hostKeyPrompt.value = HostKeyPrompt.NewHost(result.entry, deferred)
                             if (!deferred.await()) {
-                                client.disconnect()
+                                sshClient.disconnect()
                                 throw Exception("Host key rejected by user")
                             }
                             hostKeyVerifier.accept(result.entry)
@@ -566,58 +581,55 @@ class ConnectionsViewModel @Inject constructor(
                                 deferred = deferred,
                             )
                             if (!deferred.await()) {
-                                client.disconnect()
+                                sshClient.disconnect()
                                 throw Exception("Host key change rejected by user")
                             }
                             hostKeyVerifier.accept(result.new)
                         }
                     }
 
-                    // Exec mosh-server to get port and key
-                    val moshCmd = "mosh-server new -s -c 256 -l LANG=en_US.UTF-8"
-                    Log.d(TAG, "Running mosh-server bootstrap: $moshCmd")
-                    val result = client.execCommand(moshCmd)
+                    sshClient
+                }
 
-                    client.disconnect()
+                val smgr = resolveSessionManager(profile)
 
-                    // Parse MOSH CONNECT <port> <key> from stdout
-                    val connectLine = (result.stdout + "\n" + result.stderr)
-                        .lines()
-                        .firstOrNull { it.startsWith("MOSH CONNECT") }
-                        ?: throw Exception(
-                            "mosh-server not found or failed. " +
-                                "Install with: apt install mosh\n" +
-                                "stderr: ${result.stderr.take(200)}"
-                        )
-
-                    val parts = connectLine.split(" ")
-                    if (parts.size < 4) {
-                        throw Exception("Unexpected mosh-server output: $connectLine")
+                // If session manager supports listing, check for existing sessions
+                val listCmd = smgr.listCommand
+                if (listCmd != null) {
+                    val existingSessions = withContext(Dispatchers.IO) {
+                        try {
+                            val result = client.execCommand(listCmd)
+                            if (result.exitStatus == 0) {
+                                SessionManager.parseSessionList(smgr, result.stdout)
+                            } else emptyList()
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
                     }
-
-                    Triple(config.host, parts[2].toInt(), parts[3])
+                    if (existingSessions.isNotEmpty()) {
+                        // Keep SSH client alive for mosh-server exec after user picks
+                        moshPendingClient = client
+                        moshPendingHost = profile.host
+                        _sessionSelection.value = SessionSelection(
+                            sessionId = sessionId,
+                            profileId = profile.id,
+                            managerLabel = smgr.label,
+                            sessionNames = existingSessions,
+                            manager = smgr,
+                            transportType = "MOSH",
+                        )
+                        _connectingProfileId.value = null
+                        return@launch // UI will call onSessionSelected() to continue
+                    }
                 }
 
-                val (serverIp, moshPort, moshKey) = moshConnect
-                Log.d(TAG, "MOSH CONNECT parsed: $serverIp:$moshPort")
-
-                // Phase 2: Spawn mosh-client via PTY
-                withContext(Dispatchers.IO) {
-                    moshSessionManager.connectSession(
-                        sessionId = sessionId,
-                        serverIp = serverIp,
-                        moshPort = moshPort,
-                        moshKey = moshKey,
-                        cols = 80,
-                        rows = 24,
-                    )
-                }
-
-                repository.markConnected(profile.id)
-                startForegroundServiceIfNeeded()
-                _navigateToTerminal.value = profile.id
+                // No existing sessions — proceed directly
+                finishMoshConnect(sessionId, profile.id, profile.host, client, smgr, null)
             } catch (e: Exception) {
                 Log.e(TAG, "connectMosh failed for ${profile.label}: ${e.message}", e)
+                moshPendingClient?.disconnect()
+                moshPendingClient = null
+                moshPendingHost = null
                 moshSessionManager.updateStatus(sessionId, MoshSessionManager.SessionState.Status.ERROR)
                 moshSessionManager.removeSession(sessionId)
                 val msg = e.message ?: ""
@@ -629,6 +641,12 @@ class ConnectionsViewModel @Inject constructor(
                     )
                 if (isAuthError || (keyOnly && msg.isBlank())) {
                     _passwordFallback.value = profile
+                } else if (msg.contains("mosh-server not found", ignoreCase = true) ||
+                    msg.contains("command not found", ignoreCase = true) && msg.contains("mosh", ignoreCase = true)
+                ) {
+                    _showMoshSetupGuide.value = true
+                } else if (msg.contains("mosh-client binary not found", ignoreCase = true)) {
+                    _showMoshClientMissing.value = true
                 } else {
                     _error.value = msg.ifBlank { "Mosh connection failed" }
                 }
@@ -645,6 +663,36 @@ class ConnectionsViewModel @Inject constructor(
     fun onSessionSelected(sessionId: String, sessionName: String?) {
         val sel = _sessionSelection.value
         _sessionSelection.value = null
+
+        if (sel?.transportType == "MOSH") {
+            // Mosh path: finish mosh connection with chosen session name
+            val client = moshPendingClient
+            val serverHost = moshPendingHost ?: ""
+            moshPendingClient = null
+            moshPendingHost = null
+            if (client == null) {
+                _error.value = "Mosh SSH connection lost"
+                moshSessionManager.removeSession(sessionId)
+                return
+            }
+            val profileId = sel.profileId
+            viewModelScope.launch {
+                _connectingProfileId.value = profileId
+                try {
+                    finishMoshConnect(sessionId, profileId, serverHost, client, sel.manager, sessionName)
+                } catch (e: Exception) {
+                    client.disconnect()
+                    moshSessionManager.updateStatus(sessionId, MoshSessionManager.SessionState.Status.ERROR)
+                    _error.value = e.message ?: "Mosh connection failed"
+                    moshSessionManager.removeSession(sessionId)
+                } finally {
+                    _connectingProfileId.value = null
+                }
+            }
+            return
+        }
+
+        // SSH path
         val profileId = sel?.profileId ?: sshSessionManager.getSession(sessionId)?.profileId ?: return
         viewModelScope.launch {
             _connectingProfileId.value = profileId
@@ -669,18 +717,20 @@ class ConnectionsViewModel @Inject constructor(
     fun killRemoteSession(sessionName: String) {
         val sel = _sessionSelection.value ?: return
         val killCmd = sel.manager.killCommand?.invoke(sessionName) ?: return
-        val session = sshSessionManager.getSession(sel.sessionId) ?: return
+        val client = if (sel.transportType == "MOSH") moshPendingClient
+            else sshSessionManager.getSession(sel.sessionId)?.client
+        if (client == null) return
 
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    session.client.execCommand(killCmd)
+                    client.execCommand(killCmd)
                 }
                 // Refresh the session list
                 val listCmd = sel.manager.listCommand ?: return@launch
                 val updated = withContext(Dispatchers.IO) {
                     try {
-                        val result = session.client.execCommand(listCmd)
+                        val result = client.execCommand(listCmd)
                         if (result.exitStatus == 0) {
                             SessionManager.parseSessionList(sel.manager, result.stdout)
                         } else emptyList()
@@ -705,12 +755,14 @@ class ConnectionsViewModel @Inject constructor(
     fun renameRemoteSession(oldName: String, newName: String) {
         val sel = _sessionSelection.value ?: return
         val renameCmd = sel.manager.renameCommand?.invoke(oldName, newName) ?: return
-        val session = sshSessionManager.getSession(sel.sessionId) ?: return
+        val client = if (sel.transportType == "MOSH") moshPendingClient
+            else sshSessionManager.getSession(sel.sessionId)?.client
+        if (client == null) return
 
         viewModelScope.launch {
             try {
                 val renameResult = withContext(Dispatchers.IO) {
-                    session.client.execCommand(renameCmd)
+                    client.execCommand(renameCmd)
                 }
                 if (renameResult.exitStatus != 0) {
                     Log.w(TAG, "renameRemoteSession failed: exit=${renameResult.exitStatus} stderr='${renameResult.stderr}'")
@@ -723,7 +775,7 @@ class ConnectionsViewModel @Inject constructor(
                 val listCmd = sel.manager.listCommand ?: return@launch
                 val updated = withContext(Dispatchers.IO) {
                     try {
-                        val result = session.client.execCommand(listCmd)
+                        val result = client.execCommand(listCmd)
                         if (result.exitStatus == 0) {
                             SessionManager.parseSessionList(sel.manager, result.stdout)
                         } else emptyList()
@@ -829,6 +881,71 @@ class ConnectionsViewModel @Inject constructor(
             }
         }
         sshSessionManager.updateStatus(sessionId, SshSessionManager.SessionState.Status.CONNECTED)
+        repository.markConnected(profileId)
+        startForegroundServiceIfNeeded()
+        _navigateToTerminal.value = profileId
+    }
+
+    /**
+     * Finish mosh connection: exec mosh-server on SSH, parse MOSH CONNECT,
+     * disconnect SSH, spawn mosh-client with session manager initial command.
+     */
+    private suspend fun finishMoshConnect(
+        sessionId: String,
+        profileId: String,
+        serverHost: String,
+        client: SshClient,
+        manager: SessionManager,
+        chosenSessionName: String?,
+    ) {
+        val moshConnect = withContext(Dispatchers.IO) {
+            val moshCmd = "mosh-server new -s -c 256 -l LANG=en_US.UTF-8"
+            Log.d(TAG, "Running mosh-server bootstrap: $moshCmd")
+            val result = client.execCommand(moshCmd)
+
+            client.disconnect()
+
+            val connectLine = (result.stdout + "\n" + result.stderr)
+                .lines()
+                .firstOrNull { it.startsWith("MOSH CONNECT") }
+                ?: throw Exception(
+                    "mosh-server not found or failed. " +
+                        "Install with: apt install mosh\n" +
+                        "stderr: ${result.stderr.take(200)}"
+                )
+
+            val parts = connectLine.split(" ")
+            if (parts.size < 4) {
+                throw Exception("Unexpected mosh-server output: $connectLine")
+            }
+
+            Triple(serverHost, parts[2].toInt(), parts[3])
+        }
+
+        val (serverIp, moshPort, moshKey) = moshConnect
+        Log.d(TAG, "MOSH CONNECT parsed: $serverIp:$moshPort")
+
+        // Build session manager command with chosen or default session name
+        val smCmd = manager.command
+        if (smCmd != null) {
+            val rawName = chosenSessionName
+                ?: moshSessionManager.sessions.value[sessionId]?.label
+                ?: sessionId.take(8)
+            val sessionName = rawName.replace(Regex("[^A-Za-z0-9._-]"), "-")
+            moshSessionManager.setInitialCommand(sessionId, smCmd(sessionName))
+        }
+
+        withContext(Dispatchers.IO) {
+            moshSessionManager.connectSession(
+                sessionId = sessionId,
+                serverIp = serverIp,
+                moshPort = moshPort,
+                moshKey = moshKey,
+                cols = 80,
+                rows = 24,
+            )
+        }
+
         repository.markConnected(profileId)
         startForegroundServiceIfNeeded()
         _navigateToTerminal.value = profileId

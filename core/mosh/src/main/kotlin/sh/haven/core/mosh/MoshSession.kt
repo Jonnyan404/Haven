@@ -83,6 +83,25 @@ class MoshSession(
         }
 
         if (!closed) {
+            // Check exit status to help diagnose crashes
+            try {
+                val ws = PtyHelper.nativeWaitPid(childPid)
+                if (ws != null) {
+                    val status = ws[1]
+                    val termsig = status and 0x7f
+                    if (termsig == 0) {
+                        val exitCode = (status shr 8) and 0xff
+                        Log.w(TAG, "mosh-client exited with code $exitCode for $sessionId")
+                        if (exitCode == 127) {
+                            Log.e(TAG, "exit code 127: execv failed (binary not found or not executable)")
+                        }
+                    } else {
+                        Log.e(TAG, "mosh-client killed by signal $termsig for $sessionId")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "waitpid failed for $sessionId: ${e.message}")
+            }
             Log.d(TAG, "readLoop ended for $sessionId (mosh-client exited)")
             onDisconnected?.invoke(true)
         }
@@ -115,7 +134,7 @@ class MoshSession(
             writeExecutor.execute {
                 if (closed) return@execute
                 try {
-                    PtyHelper.nativeResize(masterFd, rows, cols)
+                    PtyHelper.nativeResize(masterFd, childPid, rows, cols)
                 } catch (e: Exception) {
                     Log.e(TAG, "resize failed", e)
                 }

@@ -33,6 +33,8 @@ class MoshSessionManager @Inject constructor(
         val masterFd: Int = -1,
         val childPid: Int = -1,
         val moshSession: MoshSession? = null,
+        /** Shell command to run after mosh connects (e.g. session manager attach). */
+        val initialCommand: String? = null,
     ) {
         enum class Status { CONNECTING, CONNECTED, DISCONNECTED, ERROR }
     }
@@ -93,9 +95,20 @@ class MoshSessionManager @Inject constructor(
             moshPort.toString(),
         )
 
+        // Ensure terminfo is available for ncurses
+        val terminfoDest = File(context.filesDir, "terminfo")
+        if (!File(terminfoDest, "x/xterm-256color").exists()) {
+            extractTerminfo(terminfoDest)
+        }
+
         val env = arrayOf(
             "MOSH_KEY=$moshKey",
             "TERM=xterm-256color",
+            "TERMINFO=${terminfoDest.absolutePath}",
+            "HOME=${context.filesDir.absolutePath}",
+            "PATH=/system/bin:/vendor/bin",
+            "LANG=C.UTF-8",
+            "LC_ALL=C.UTF-8",
         )
 
         val result = PtyHelper.nativeForkPty(moshClientPath, argv, env, rows, cols)
@@ -168,6 +181,13 @@ class MoshSessionManager @Inject constructor(
         }
     }
 
+    fun setInitialCommand(sessionId: String, command: String) {
+        _sessions.update { map ->
+            val existing = map[sessionId] ?: return@update map
+            map + (sessionId to existing.copy(initialCommand = command))
+        }
+    }
+
     fun updateStatus(sessionId: String, status: SessionState.Status) {
         _sessions.update { map ->
             val existing = map[sessionId] ?: return@update map
@@ -237,21 +257,34 @@ class MoshSessionManager @Inject constructor(
     }
 
     /**
-     * Find the mosh-client binary. It's packaged as libmoshclient.so in jniLibs
-     * so that Android includes it in the native library directory.
+     * Find the mosh-client binary. It's packaged as libmoshclient.so in jniLibs.
+     *
+     * With extractNativeLibs=true, Android extracts native libs to nativeLibraryDir
+     * which has the correct SELinux context (apk_data_file) for execv().
+     * Files in app's filesDir (app_data_file) are blocked by SELinux execute_no_trans.
      */
     private fun findMoshClient(): String? {
-        val primary = File(context.applicationInfo.nativeLibraryDir, "libmoshclient.so")
-        if (primary.exists() && primary.canExecute()) return primary.absolutePath
-
-        // SELinux fallback: copy to app filesDir and make executable
-        if (primary.exists()) {
-            val fallback = File(context.filesDir, "mosh-client")
-            primary.copyTo(fallback, overwrite = true)
-            fallback.setExecutable(true)
-            if (fallback.canExecute()) return fallback.absolutePath
+        // Execute directly from nativeLibraryDir — only location Android allows execv()
+        val nativeLib = File(context.applicationInfo.nativeLibraryDir, "libmoshclient.so")
+        if (nativeLib.exists()) {
+            Log.d(TAG, "Found mosh-client at ${nativeLib.absolutePath}")
+            return nativeLib.absolutePath
         }
 
+        Log.e(TAG, "mosh-client not found in nativeLibraryDir: ${context.applicationInfo.nativeLibraryDir}")
         return null
+    }
+
+    private fun extractTerminfo(dest: File) {
+        try {
+            val assetPath = "terminfo/x/xterm-256color"
+            val outFile = File(dest, "x/xterm-256color")
+            outFile.parentFile?.mkdirs()
+            context.assets.open(assetPath).use { input ->
+                outFile.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to extract terminfo", e)
+        }
     }
 }

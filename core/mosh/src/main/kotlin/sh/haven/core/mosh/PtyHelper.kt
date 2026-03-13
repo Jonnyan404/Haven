@@ -22,7 +22,15 @@ object PtyHelper {
     ): IntArray?
 
     /**
-     * Resize the PTY window.
+     * Resize the PTY window and send SIGWINCH to the child process.
      */
-    external fun nativeResize(masterFd: Int, rows: Int, cols: Int)
+    external fun nativeResize(masterFd: Int, childPid: Int, rows: Int, cols: Int)
+
+    /**
+     * Non-blocking waitpid to get child exit status.
+     * @return int[2] = {pid, status}, or null if child hasn't exited.
+     *         Decode status: if (status & 0x7f) == 0: exited with (status >> 8) & 0xff
+     *                        else: killed by signal (status & 0x7f)
+     */
+    external fun nativeWaitPid(pid: Int): IntArray?
 }

@@ -539,6 +539,16 @@ class TerminalViewModel @Inject constructor(
 
             moshSession.start()
 
+            // Send session manager command (tmux/zellij/screen) if configured
+            val initialCmd = session.initialCommand
+            if (initialCmd != null) {
+                // Small delay to let mosh-client establish the connection
+                viewModelScope.launch {
+                    kotlinx.coroutines.delay(500)
+                    moshSession.sendInput((initialCmd + "\n").toByteArray())
+                }
+            }
+
             currentTabs.add(
                 TerminalTab(
                     sessionId = session.sessionId,

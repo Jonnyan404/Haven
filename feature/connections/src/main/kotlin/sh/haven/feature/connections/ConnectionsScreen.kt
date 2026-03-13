@@ -70,6 +70,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -125,6 +126,8 @@ fun ConnectionsScreen(
     val globalSessionManagerLabel by viewModel.globalSessionManagerLabel.collectAsState()
     val newSessionProfileId by viewModel.newSessionProfileId.collectAsState()
     val subnetScanning by viewModel.subnetScanning.collectAsState()
+    val showMoshSetupGuide by viewModel.showMoshSetupGuide.collectAsState()
+    val showMoshClientMissing by viewModel.showMoshClientMissing.collectAsState()
 
 
     LaunchedEffect(navigateToTerminal) {
@@ -353,6 +356,68 @@ fun ConnectionsScreen(
             onRename = { old, new -> viewModel.renameRemoteSession(old, new) },
             onNewSession = { viewModel.onSessionSelected(selection.sessionId, null) },
             onDismiss = { viewModel.dismissSessionPicker() },
+        )
+    }
+
+    if (showMoshSetupGuide) {
+        val uriHandler = LocalUriHandler.current
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissMoshSetupGuide() },
+            title = { Text("Mosh not found on server") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "The remote host doesn't have mosh-server installed. " +
+                            "Mosh (Mobile Shell) keeps your session alive across " +
+                            "network changes and high-latency connections."
+                    )
+                    Text("Install it on the server:")
+                    Text(
+                        "  Ubuntu/Debian:  sudo apt install mosh\n" +
+                            "  Fedora/RHEL:    sudo dnf install mosh\n" +
+                            "  Arch:           sudo pacman -S mosh\n" +
+                            "  macOS:          brew install mosh",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text("UDP port 60001 must be open on the server firewall.")
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    uriHandler.openUri("https://github.com/mobile-shell/mosh")
+                }) { Text("Mosh on GitHub") }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissMoshSetupGuide() }) { Text("OK") }
+            },
+        )
+    }
+
+    if (showMoshClientMissing) {
+        val uriHandler = LocalUriHandler.current
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissMoshClientMissing() },
+            title = { Text("Mosh client not built") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "The mosh-client binary is not included in this build. " +
+                            "It needs to be cross-compiled for Android using the NDK."
+                    )
+                    Text(
+                        "Run tools/build-mosh.sh with Android NDK r27+ to build " +
+                            "the mosh-client binary, then rebuild the app.",
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    uriHandler.openUri("https://github.com/mobile-shell/mosh")
+                }) { Text("Mosh on GitHub") }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissMoshClientMissing() }) { Text("OK") }
+            },
         )
     }
 
