@@ -238,6 +238,30 @@ class TerminalViewModel @Inject constructor(
         )
     }
 
+    /**
+     * Send Ctrl+L to the active tab if its profile uses Zellij as session manager.
+     * Called by TerminalScreen when the keyboard hides to trigger a full redraw,
+     * working around Zellij not reflowing content on alternate screen resize.
+     */
+    fun sendRedrawIfZellij() {
+        val tab = _tabs.value.getOrNull(_activeTabIndex.value) ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val profile = connectionDao.getById(tab.profileId)
+            val smOverride = profile?.sessionManager
+            val isZellij = if (smOverride != null) {
+                smOverride.equals("ZELLIJ", ignoreCase = true)
+            } else {
+                preferencesRepository.sessionManager.first().name
+                    .equals("ZELLIJ", ignoreCase = true)
+            }
+            if (isZellij) {
+                // Ctrl+L = 0x0C (form feed) — triggers shell clear/redraw inside Zellij pane
+                kotlinx.coroutines.delay(300) // wait for resize debounce + SIGWINCH
+                tab.sendInput(byteArrayOf(0x0C))
+            }
+        }
+    }
+
     /** Save VNC settings for a profile. */
     fun saveVncSettings(profileId: String, port: Int, password: String?, sshForward: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {

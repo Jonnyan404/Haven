@@ -40,6 +40,16 @@ class MoshConnection(
     private var sendNonceSeq = 0L
     private var fragmentIdCounter = 0
 
+    // Reuse zlib instances — send is single-threaded, receive is single-threaded
+    private val deflater = Deflater()
+    private val inflater = Inflater()
+    // Reuse buffers for zlib work
+    private val deflateBuf = ByteArray(1024)
+    private val inflateBuf = ByteArray(4096)
+    // Reuse receive buffer
+    private val recvBuf = ByteArray(RECV_BUF_SIZE)
+    private val recvPacket = DatagramPacket(recvBuf, recvBuf.size)
+
     // Timestamp tracking for RTT estimation
     @Volatile var lastReceivedTimestamp: Int = 0
         private set
@@ -107,15 +117,14 @@ class MoshConnection(
         socket.soTimeout = timeoutMs
 
         while (true) {
-            val buf = ByteArray(RECV_BUF_SIZE)
-            val dp = DatagramPacket(buf, buf.size)
+            recvPacket.length = recvBuf.size
             try {
-                socket.receive(dp)
+                socket.receive(recvPacket)
             } catch (_: SocketTimeoutException) {
                 return null
             }
 
-            val packet = dp.data.copyOf(dp.length)
+            val packet = recvBuf.copyOf(recvPacket.length)
 
             val (nonceVal, plaintext) = try {
                 crypto.decrypt(packet)
@@ -186,6 +195,32 @@ class MoshConnection(
 
     override fun close() {
         socket.close()
+        deflater.end()
+        inflater.end()
+    }
+
+    private fun zlibCompress(data: ByteArray): ByteArray {
+        deflater.reset()
+        deflater.setInput(data)
+        deflater.finish()
+        val out = ByteArrayOutputStream(data.size)
+        while (!deflater.finished()) {
+            val n = deflater.deflate(deflateBuf)
+            out.write(deflateBuf, 0, n)
+        }
+        return out.toByteArray()
+    }
+
+    private fun zlibDecompress(data: ByteArray): ByteArray {
+        inflater.reset()
+        inflater.setInput(data)
+        val out = ByteArrayOutputStream(data.size * 2)
+        while (!inflater.finished()) {
+            val n = inflater.inflate(inflateBuf)
+            if (n == 0 && inflater.needsInput()) break
+            out.write(inflateBuf, 0, n)
+        }
+        return out.toByteArray()
     }
 
     companion object {
@@ -195,39 +230,5 @@ class MoshConnection(
         const val MAX_FRAG_PAYLOAD = 1194
         const val RECV_BUF_SIZE = 2048
         const val MAX_PENDING_ASSEMBLIES = 16
-
-        fun zlibCompress(data: ByteArray): ByteArray {
-            val deflater = Deflater()
-            try {
-                deflater.setInput(data)
-                deflater.finish()
-                val out = ByteArrayOutputStream(data.size)
-                val buf = ByteArray(1024)
-                while (!deflater.finished()) {
-                    val n = deflater.deflate(buf)
-                    out.write(buf, 0, n)
-                }
-                return out.toByteArray()
-            } finally {
-                deflater.end()
-            }
-        }
-
-        fun zlibDecompress(data: ByteArray): ByteArray {
-            val inflater = Inflater()
-            try {
-                inflater.setInput(data)
-                val out = ByteArrayOutputStream(data.size * 2)
-                val buf = ByteArray(4096)
-                while (!inflater.finished()) {
-                    val n = inflater.inflate(buf)
-                    if (n == 0 && inflater.needsInput()) break
-                    out.write(buf, 0, n)
-                }
-                return out.toByteArray()
-            } finally {
-                inflater.end()
-            }
-        }
     }
 }

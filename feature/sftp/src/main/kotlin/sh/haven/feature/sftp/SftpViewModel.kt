@@ -16,6 +16,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import sh.haven.core.data.db.entities.ConnectionProfile
 import sh.haven.core.data.repository.ConnectionRepository
+import sh.haven.core.mosh.MoshSessionManager
+import sh.haven.core.ssh.SshClient
 import sh.haven.core.ssh.SshSessionManager
 import sh.haven.core.ssh.SshSessionManager.SessionState
 import java.io.OutputStream
@@ -39,6 +41,7 @@ enum class SortMode {
 @HiltViewModel
 class SftpViewModel @Inject constructor(
     private val sessionManager: SshSessionManager,
+    private val moshSessionManager: MoshSessionManager,
     private val repository: ConnectionRepository,
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
@@ -75,11 +78,22 @@ class SftpViewModel @Inject constructor(
 
     fun syncConnectedProfiles() {
         viewModelScope.launch {
-            val sessions = sessionManager.sessions.value
-            val connectedProfileIds = sessions.values
+            // Collect profile IDs from SSH sessions
+            val sshProfileIds = sessionManager.sessions.value.values
                 .filter { it.status == SessionState.Status.CONNECTED }
                 .map { it.profileId }
                 .toSet()
+
+            // Collect profile IDs from mosh sessions that have a live SSH client
+            val moshProfileIds = moshSessionManager.sessions.value.values
+                .filter {
+                    it.status == MoshSessionManager.SessionState.Status.CONNECTED &&
+                        it.sshClient != null
+                }
+                .map { it.profileId }
+                .toSet()
+
+            val connectedProfileIds = sshProfileIds + moshProfileIds
 
             if (connectedProfileIds.isEmpty()) {
                 _connectedProfiles.value = emptyList()
@@ -225,6 +239,7 @@ class SftpViewModel @Inject constructor(
                 _loading.value = true
                 withContext(Dispatchers.IO) {
                     val channel = sessionManager.openSftpForProfile(profileId)
+                        ?: openMoshSftpChannel(profileId)
                         ?: throw IllegalStateException("Session not connected")
                     sftpChannel = channel
                     // Navigate to home directory on first connect
@@ -283,9 +298,23 @@ class SftpViewModel @Inject constructor(
 
     private fun getOrOpenChannel(profileId: String): ChannelSftp? {
         sftpChannel?.let { if (it.isConnected) return it }
-        val channel = sessionManager.openSftpForProfile(profileId) ?: return null
+        // Try SSH session first, then mosh bootstrap SSH client
+        val channel = sessionManager.openSftpForProfile(profileId)
+            ?: openMoshSftpChannel(profileId)
+            ?: return null
         sftpChannel = channel
         return channel
+    }
+
+    private fun openMoshSftpChannel(profileId: String): ChannelSftp? {
+        val client = moshSessionManager.getSshClientForProfile(profileId) as? SshClient
+            ?: return null
+        return try {
+            client.openSftpChannel()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to open SFTP channel via mosh SSH client", e)
+            null
+        }
     }
 
     private fun sortEntries(entries: List<SftpEntry>, mode: SortMode): List<SftpEntry> {

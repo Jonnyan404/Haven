@@ -17,6 +17,10 @@ class MoshCrypto(keyBase64: String) {
 
     private val keyParam: KeyParameter
 
+    // Reuse cipher instances — encrypt/decrypt are each single-threaded
+    private val encryptCipher = OCBBlockCipher(AESEngine.newInstance(), AESEngine.newInstance())
+    private val decryptCipher = OCBBlockCipher(AESEngine.newInstance(), AESEngine.newInstance())
+
     init {
         val padded = when (keyBase64.length % 4) {
             2 -> keyBase64 + "=="
@@ -36,12 +40,11 @@ class MoshCrypto(keyBase64: String) {
         val nonce12 = makeOcbNonce(nonceVal)
         val params = AEADParameters(keyParam, TAG_BITS, nonce12)
 
-        val ocb = OCBBlockCipher(AESEngine.newInstance(), AESEngine.newInstance())
-        ocb.init(true, params)
+        encryptCipher.init(true, params)
 
-        val output = ByteArray(ocb.getOutputSize(plaintext.size))
-        var len = ocb.processBytes(plaintext, 0, plaintext.size, output, 0)
-        len += ocb.doFinal(output, len)
+        val output = ByteArray(encryptCipher.getOutputSize(plaintext.size))
+        var len = encryptCipher.processBytes(plaintext, 0, plaintext.size, output, 0)
+        len += encryptCipher.doFinal(output, len)
 
         val packet = ByteArray(WIRE_NONCE_LEN + len)
         putBE64(packet, 0, nonceVal)
@@ -62,13 +65,12 @@ class MoshCrypto(keyBase64: String) {
         val nonce12 = makeOcbNonce(nonceVal)
         val params = AEADParameters(keyParam, TAG_BITS, nonce12)
 
-        val ocb = OCBBlockCipher(AESEngine.newInstance(), AESEngine.newInstance())
-        ocb.init(false, params)
+        decryptCipher.init(false, params)
 
         val ciphertextLen = packet.size - WIRE_NONCE_LEN
-        val output = ByteArray(ocb.getOutputSize(ciphertextLen))
-        var len = ocb.processBytes(packet, WIRE_NONCE_LEN, ciphertextLen, output, 0)
-        len += ocb.doFinal(output, len)
+        val output = ByteArray(decryptCipher.getOutputSize(ciphertextLen))
+        var len = decryptCipher.processBytes(packet, WIRE_NONCE_LEN, ciphertextLen, output, 0)
+        len += decryptCipher.doFinal(output, len)
 
         return nonceVal to output.copyOf(len)
     }

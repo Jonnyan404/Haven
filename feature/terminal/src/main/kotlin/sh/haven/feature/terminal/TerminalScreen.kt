@@ -70,6 +70,8 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 import androidx.core.content.res.ResourcesCompat
 import androidx.core.view.WindowCompat
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.core.view.WindowInsetsCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import org.connectbot.terminal.ModifierManager
@@ -89,6 +91,7 @@ private val TAB_GROUP_COLORS = listOf(
     Color(0xFF8D6E63), // brown
 )
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun TerminalScreen(
     navigateToProfileId: String? = null,
@@ -136,6 +139,16 @@ fun TerminalScreen(
         } else if (!isActive) {
             controller.hide(WindowInsetsCompat.Type.ime())
         }
+    }
+
+    // Detect keyboard hide → send Ctrl+L for Zellij profiles to trigger redraw
+    val imeVisible = WindowInsets.isImeVisible
+    var wasImeVisible by remember { mutableStateOf(imeVisible) }
+    LaunchedEffect(imeVisible) {
+        if (wasImeVisible && !imeVisible) {
+            viewModel.sendRedrawIfZellij()
+        }
+        wasImeVisible = imeVisible
     }
 
     // Navigate to specific tab if requested

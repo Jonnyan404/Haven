@@ -5,8 +5,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import sh.haven.core.mosh.crypto.MoshCrypto
 import sh.haven.core.mosh.network.MoshConnection
 import sh.haven.core.mosh.proto.HostInstruction
@@ -49,6 +51,9 @@ class MoshTransport(
     @Volatile private var lastSentNewNum: Long = 0
     @Volatile private var retransmitCount: Int = 0
 
+    // Conflated channel: wakes the send loop immediately when input arrives
+    private val inputNotify = Channel<Unit>(Channel.CONFLATED)
+
     @Volatile private var closed = false
     private var receiveJob: Job? = null
     private var sendJob: Job? = null
@@ -77,12 +82,14 @@ class MoshTransport(
     fun sendInput(data: ByteArray) {
         if (closed) return
         userStream.pushKeystroke(data)
+        inputNotify.trySend(Unit)
     }
 
     /** Enqueue a terminal resize event. */
     fun resize(cols: Int, rows: Int) {
         if (closed) return
         userStream.pushResize(cols, rows)
+        inputNotify.trySend(Unit)
     }
 
     override fun close() {
@@ -170,14 +177,14 @@ class MoshTransport(
                     // Keepalive
                     elapsed >= KEEPALIVE_INTERVAL_MS -> sendState()
                     else -> {
-                        // Cap sleep at POLL_INTERVAL_MS so we notice incoming acks quickly
                         val wait = when {
                             hasNewInput -> SEND_MIN_INTERVAL_MS - elapsed
                             hasNewAck -> ACK_DELAY_MS - elapsed
                             needsRetransmit -> retransmitInterval() - elapsed
-                            else -> minOf(KEEPALIVE_INTERVAL_MS - elapsed, POLL_INTERVAL_MS)
+                            // Idle: sleep until next keepalive, woken early by inputNotify
+                            else -> KEEPALIVE_INTERVAL_MS - elapsed
                         }
-                        delay(maxOf(5L, wait))
+                        withTimeoutOrNull(maxOf(5L, wait)) { inputNotify.receive() }
                     }
                 }
             }
@@ -225,7 +232,6 @@ class MoshTransport(
         const val PROTOCOL_VERSION = 2
         const val SEND_MIN_INTERVAL_MS = 20L
         const val ACK_DELAY_MS = 20L
-        const val POLL_INTERVAL_MS = 100L   // max sleep between send-loop iterations
         const val KEEPALIVE_INTERVAL_MS = 3000L
         const val RECV_TIMEOUT_MS = 250
     }

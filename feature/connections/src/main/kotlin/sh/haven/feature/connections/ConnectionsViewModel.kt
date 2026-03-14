@@ -918,19 +918,23 @@ class ConnectionsViewModel @Inject constructor(
             Log.d(TAG, "Running mosh-server bootstrap: $moshCmd")
             val result = client.execCommand(moshCmd)
 
-            client.disconnect()
+            // Keep SSH client alive for SFTP — don't disconnect
 
             val connectLine = (result.stdout + "\n" + result.stderr)
                 .lines()
                 .firstOrNull { it.startsWith("MOSH CONNECT") }
-                ?: throw Exception(
-                    "mosh-server not found or failed. " +
-                        "Install with: apt install mosh\n" +
-                        "stderr: ${result.stderr.take(200)}"
-                )
+                ?: run {
+                    client.disconnect()
+                    throw Exception(
+                        "mosh-server not found or failed. " +
+                            "Install with: apt install mosh\n" +
+                            "stderr: ${result.stderr.take(200)}"
+                    )
+                }
 
             val parts = connectLine.split(" ")
             if (parts.size < 4) {
+                client.disconnect()
                 throw Exception("Unexpected mosh-server output: $connectLine")
             }
 
@@ -958,6 +962,7 @@ class ConnectionsViewModel @Inject constructor(
                 moshKey = moshKey,
                 cols = 80,
                 rows = 24,
+                sshClient = client,
             )
         }
 

@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.io.Closeable
 import java.util.UUID
 import java.util.concurrent.Executors
 import javax.inject.Inject
@@ -36,6 +37,8 @@ class MoshSessionManager @Inject constructor(
         val moshSession: MoshSession? = null,
         /** Shell command to run after mosh connects (e.g. session manager attach). */
         val initialCommand: String? = null,
+        /** SSH client kept alive from bootstrap for SFTP access (opaque Closeable). */
+        val sshClient: Closeable? = null,
     ) {
         enum class Status { CONNECTING, CONNECTED, DISCONNECTED, ERROR }
     }
@@ -81,11 +84,12 @@ class MoshSessionManager @Inject constructor(
         moshKey: String,
         cols: Int,
         rows: Int,
+        sshClient: Closeable? = null,
     ) {
         _sessions.value[sessionId]
             ?: throw IllegalStateException("Session $sessionId not found")
 
-        Log.d(TAG, "Connecting mosh session: $serverIp:$moshPort")
+        Log.d(TAG, "Connecting mosh session: $serverIp:$moshPort (ssh kept alive: ${sshClient != null})")
 
         _sessions.update { map ->
             val existing = map[sessionId] ?: return@update map
@@ -94,8 +98,20 @@ class MoshSessionManager @Inject constructor(
                 serverIp = serverIp,
                 moshPort = moshPort,
                 moshKey = moshKey,
+                sshClient = sshClient,
             ))
         }
+    }
+
+    /**
+     * Get the SSH client for a connected mosh profile (for SFTP access).
+     * Returns the opaque Closeable — caller must cast to SshClient.
+     */
+    fun getSshClientForProfile(profileId: String): Closeable? {
+        return _sessions.value.values
+            .filter { it.profileId == profileId && it.status == SessionState.Status.CONNECTED }
+            .firstOrNull { it.sshClient != null }
+            ?.sshClient
     }
 
     /**
@@ -171,6 +187,7 @@ class MoshSessionManager @Inject constructor(
         _sessions.update { it - sessionId }
         ioExecutor.execute {
             try {
+                session.sshClient?.close()
                 session.moshSession?.close()
             } catch (e: Exception) {
                 Log.e(TAG, "tearDown failed for $sessionId", e)
@@ -184,6 +201,7 @@ class MoshSessionManager @Inject constructor(
         ioExecutor.execute {
             toRemove.forEach { session ->
                 try {
+                    session.sshClient?.close()
                     session.moshSession?.close()
                 } catch (e: Exception) {
                     Log.e(TAG, "tearDown failed for ${session.sessionId}", e)
@@ -198,6 +216,7 @@ class MoshSessionManager @Inject constructor(
         ioExecutor.execute {
             snapshot.forEach { session ->
                 try {
+                    session.sshClient?.close()
                     session.moshSession?.close()
                 } catch (e: Exception) {
                     Log.e(TAG, "tearDown failed for ${session.sessionId}", e)
