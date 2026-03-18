@@ -38,8 +38,6 @@ import sh.haven.feature.keys.KeysScreen
 import sh.haven.feature.settings.SettingsScreen
 import sh.haven.feature.sftp.SftpScreen
 import sh.haven.feature.terminal.TerminalScreen
-import sh.haven.feature.rdp.RdpScreen
-import sh.haven.feature.vnc.VncScreen
 import kotlin.math.abs
 
 @Composable
@@ -59,17 +57,14 @@ fun HavenNavHost(
     // Profile ID for opening a new session (new tab) on an existing connection
     var pendingNewSessionProfileId by rememberSaveable { mutableStateOf<String?>(null) }
 
-    // VNC auto-connect params from terminal
+    // VNC auto-connect params
     var pendingVncHost by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingVncPort by rememberSaveable { mutableStateOf<Int?>(null) }
     var pendingVncPassword by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingVncSshForward by rememberSaveable { mutableStateOf(false) }
     var pendingVncSshSessionId by rememberSaveable { mutableStateOf<String?>(null) }
 
-    // Disable pager swipe while terminal text selection is active
-    var terminalSelectionActive by remember { mutableStateOf(false) }
-
-    // RDP auto-connect params from terminal
+    // RDP auto-connect params
     var pendingRdpHost by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingRdpPort by rememberSaveable { mutableStateOf<Int?>(null) }
     var pendingRdpUsername by rememberSaveable { mutableStateOf<String?>(null) }
@@ -78,18 +73,16 @@ fun HavenNavHost(
     var pendingRdpSshForward by rememberSaveable { mutableStateOf(false) }
     var pendingRdpSshSessionId by rememberSaveable { mutableStateOf<String?>(null) }
 
-    // VNC/RDP fullscreen hides bottom nav and system bars
-    var vncFullscreen by remember { mutableStateOf(false) }
-    var rdpFullscreen by remember { mutableStateOf(false) }
+    // Disable pager swipe while terminal text selection is active
+    var terminalSelectionActive by remember { mutableStateOf(false) }
+
+    // Desktop fullscreen hides bottom nav and system bars
+    var desktopFullscreen by remember { mutableStateOf(false) }
 
     Scaffold(
-        // Exclude IME from Scaffold's contentWindowInsets so that imePadding()
-        // on the HorizontalPager can observe and apply keyboard insets directly.
-        // Without this, Scaffold consumes IME insets and the terminal doesn't
-        // resize when the keyboard opens/closes.
         contentWindowInsets = ScaffoldDefaults.contentWindowInsets.exclude(WindowInsets.ime),
         bottomBar = {
-            if (!vncFullscreen && !rdpFullscreen) {
+            if (!desktopFullscreen) {
                 NavigationBar {
                     screens.forEachIndexed { index, screen ->
                         NavigationBarItem(
@@ -109,7 +102,6 @@ fun HavenNavHost(
     ) { innerPadding ->
         HorizontalPager(
             state = pagerState,
-            // VNC canvas consumes touch at Initial pass; toolbar/keyboard areas pass through.
             modifier = Modifier
                 .padding(innerPadding)
                 .consumeWindowInsets(innerPadding)
@@ -136,7 +128,7 @@ fun HavenNavHost(
                         pendingVncSshForward = false
                         pendingVncSshSessionId = null
                         coroutineScope.launch {
-                            pagerState.animateScrollToPage(Screen.Vnc.ordinal)
+                            pagerState.animateScrollToPage(Screen.Desktop.ordinal)
                         }
                     },
                     onNavigateToRdp = { host, port, username, password, domain ->
@@ -148,7 +140,7 @@ fun HavenNavHost(
                         pendingRdpSshForward = false
                         pendingRdpSshSessionId = null
                         coroutineScope.launch {
-                            pagerState.animateScrollToPage(Screen.Rdp.ordinal)
+                            pagerState.animateScrollToPage(Screen.Desktop.ordinal)
                         }
                     },
                 )
@@ -171,13 +163,10 @@ fun HavenNavHost(
                             pendingVncSshForward = sshForward
                             pendingVncSshSessionId = sshSessionId
                             coroutineScope.launch {
-                                pagerState.animateScrollToPage(Screen.Vnc.ordinal)
+                                pagerState.animateScrollToPage(Screen.Desktop.ordinal)
                             }
                         },
                         onSelectionActiveChanged = { terminalSelectionActive = it },
-                        // Terminal composable consumes touch events, blocking pager swipe.
-                        // Intercept horizontal drags at Initial pass and forward to pager.
-                        // Disabled while text selection is active so drag extends the selection.
                         terminalModifier = if (terminalSelectionActive) Modifier
                             else Modifier.pagerSwipeOverride(pagerState, coroutineScope),
                     )
@@ -192,34 +181,13 @@ fun HavenNavHost(
                         }
                     }
                 }
-                Screen.Vnc -> VncScreen(
-                    isActive = pagerState.settledPage == Screen.Vnc.ordinal,
-                    pendingHost = pendingVncHost,
-                    pendingPort = pendingVncPort,
-                    pendingPassword = pendingVncPassword,
-                    pendingSshForward = pendingVncSshForward,
-                    pendingSshSessionId = pendingVncSshSessionId,
-                    toolbarLayout = toolbarLayout,
-                    onPendingConsumed = {
+                Screen.Desktop -> {
+                    val consumePending = {
                         pendingVncHost = null
                         pendingVncPort = null
                         pendingVncPassword = null
                         pendingVncSshForward = false
                         pendingVncSshSessionId = null
-                    },
-                    onFullscreenChanged = { vncFullscreen = it },
-                )
-                Screen.Rdp -> RdpScreen(
-                    isActive = pagerState.settledPage == Screen.Rdp.ordinal,
-                    pendingHost = pendingRdpHost,
-                    pendingPort = pendingRdpPort,
-                    pendingUsername = pendingRdpUsername,
-                    pendingPassword = pendingRdpPassword,
-                    pendingDomain = pendingRdpDomain,
-                    pendingSshForward = pendingRdpSshForward,
-                    pendingSshSessionId = pendingRdpSshSessionId,
-                    toolbarLayout = toolbarLayout,
-                    onPendingConsumed = {
                         pendingRdpHost = null
                         pendingRdpPort = null
                         pendingRdpUsername = null
@@ -227,9 +195,26 @@ fun HavenNavHost(
                         pendingRdpDomain = null
                         pendingRdpSshForward = false
                         pendingRdpSshSessionId = null
-                    },
-                    onFullscreenChanged = { rdpFullscreen = it },
-                )
+                    }
+                    DesktopScreen(
+                        isActive = pagerState.settledPage == Screen.Desktop.ordinal,
+                        pendingVncHost = pendingVncHost,
+                        pendingVncPort = pendingVncPort,
+                        pendingVncPassword = pendingVncPassword,
+                        pendingVncSshForward = pendingVncSshForward,
+                        pendingVncSshSessionId = pendingVncSshSessionId,
+                        pendingRdpHost = pendingRdpHost,
+                        pendingRdpPort = pendingRdpPort,
+                        pendingRdpUsername = pendingRdpUsername,
+                        pendingRdpPassword = pendingRdpPassword,
+                        pendingRdpDomain = pendingRdpDomain,
+                        pendingRdpSshForward = pendingRdpSshForward,
+                        pendingRdpSshSessionId = pendingRdpSshSessionId,
+                        toolbarLayout = toolbarLayout,
+                        onPendingConsumed = consumePending,
+                        onFullscreenChanged = { desktopFullscreen = it },
+                    )
+                }
                 Screen.Sftp -> SftpScreen()
                 Screen.Keys -> KeysScreen()
                 Screen.Settings -> SettingsScreen()
