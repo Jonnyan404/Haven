@@ -2,7 +2,7 @@
 # Build rdp-transport for Android targets and generate Kotlin bindings.
 #
 # Prerequisites:
-#   cargo install cargo-ndk uniffi-bindgen-cli
+#   cargo install cargo-ndk
 #   rustup target add aarch64-linux-android x86_64-linux-android
 #   ANDROID_NDK_HOME set (or detected from ~/Android/Sdk/ndk/*)
 
@@ -11,7 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUST_DIR="$SCRIPT_DIR/../rust"
 OUT_DIR="$SCRIPT_DIR/../jniLibs"
-KOTLIN_DIR="$SCRIPT_DIR/../kotlin/sh/haven/rdp"
+KOTLIN_DIR="$SCRIPT_DIR/../kotlin"
 
 # Detect NDK if not set
 if [ -z "${ANDROID_NDK_HOME:-}" ]; then
@@ -36,26 +36,33 @@ cargo ndk -t x86_64 -o "$OUT_DIR" build --release
 echo "==> Generating Kotlin bindings..."
 mkdir -p "$KOTLIN_DIR"
 
-# Use the host-built library for binding generation
-# (need a host build for uniffi-bindgen)
-cargo build --release 2>/dev/null || true
+# Host (debug) build for binding generation — debug so metadata isn't stripped
+echo "==> Building host library (debug) for uniffi-bindgen..."
+cargo build
 
 LIBPATH=""
-if [ -f "target/release/librdp_transport.so" ]; then
-    LIBPATH="target/release/librdp_transport.so"
-elif [ -f "target/release/librdp_transport.dylib" ]; then
-    LIBPATH="target/release/librdp_transport.dylib"
+if [ -f "target/debug/librdp_transport.so" ]; then
+    LIBPATH="target/debug/librdp_transport.so"
+elif [ -f "target/debug/librdp_transport.dylib" ]; then
+    LIBPATH="target/debug/librdp_transport.dylib"
 fi
 
-if [ -n "$LIBPATH" ]; then
-    uniffi-bindgen generate --library "$LIBPATH" \
-        --language kotlin --out-dir "$KOTLIN_DIR" \
-        --config uniffi.toml
-    echo "==> Kotlin bindings generated in $KOTLIN_DIR"
-else
-    echo "WARN: Could not generate Kotlin bindings (no host library found)"
-    echo "      Run 'cargo build --release' on the host first"
+if [ -z "$LIBPATH" ]; then
+    echo "ERROR: Host build succeeded but library not found in target/debug/" >&2
+    exit 1
 fi
+
+cargo run --bin uniffi-bindgen -- generate --library "$LIBPATH" \
+    --language kotlin --out-dir "$KOTLIN_DIR" \
+    --config uniffi.toml
+
+# Verify generated bindings exist
+if [ ! -f "$KOTLIN_DIR/sh/haven/rdp/rdp_transport.kt" ]; then
+    echo "ERROR: uniffi-bindgen did not produce rdp_transport.kt" >&2
+    exit 1
+fi
+
+echo "==> Kotlin bindings generated in $KOTLIN_DIR"
 
 echo "==> Done. Libraries in $OUT_DIR:"
 find "$OUT_DIR" -name "*.so" -type f

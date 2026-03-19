@@ -33,6 +33,9 @@ data class ConnectionProfile(
     val rdpPort: Int = 3389,
     val rdpUsername: String? = null,
     val rdpDomain: String? = null,
+    val rdpPassword: String? = null,
+    val rdpSshForward: Boolean = false,
+    val rdpSshProfileId: String? = null,
 ) {
     enum class AuthType {
         PASSWORD,

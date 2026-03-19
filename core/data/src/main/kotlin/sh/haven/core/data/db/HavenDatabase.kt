@@ -18,7 +18,7 @@ import sh.haven.core.data.db.entities.SshKey
         SshKey::class,
         PortForwardRule::class,
     ],
-    version = 12,
+    version = 15,
     exportSchema = true,
 )
 abstract class HavenDatabase : RoomDatabase() {
@@ -124,6 +124,24 @@ abstract class HavenDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE connection_profiles ADD COLUMN rdpPort INTEGER NOT NULL DEFAULT 3389")
                 db.execSQL("ALTER TABLE connection_profiles ADD COLUMN rdpUsername TEXT")
                 db.execSQL("ALTER TABLE connection_profiles ADD COLUMN rdpDomain TEXT")
+            }
+        }
+
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE connection_profiles ADD COLUMN rdpSshForward INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE connection_profiles ADD COLUMN rdpSshProfileId TEXT")
+            }
+        }
+
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE connection_profiles ADD COLUMN rdpPassword TEXT")
             }
         }
     }

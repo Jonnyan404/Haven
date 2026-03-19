@@ -64,6 +64,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -95,7 +96,7 @@ fun ConnectionsScreen(
     onNavigateToTerminal: (profileId: String) -> Unit = {},
     onNavigateToNewSession: (profileId: String) -> Unit = {},
     onNavigateToVnc: (host: String, port: Int, password: String?) -> Unit = { _, _, _ -> },
-    onNavigateToRdp: (host: String, port: Int, username: String, password: String, domain: String) -> Unit = { _, _, _, _, _ -> },
+    onNavigateToRdp: (host: String, port: Int, username: String, password: String, domain: String, sshForward: Boolean, sshProfileId: String?, sshSessionId: String?) -> Unit = { _, _, _, _, _, _, _, _ -> },
     viewModel: ConnectionsViewModel = hiltViewModel(),
 ) {
     val connections by viewModel.connections.collectAsState()
@@ -150,7 +151,7 @@ fun ConnectionsScreen(
 
     LaunchedEffect(navigateToRdp) {
         navigateToRdp?.let { nav ->
-            onNavigateToRdp(nav.host, nav.port, nav.username, nav.password, nav.domain)
+            onNavigateToRdp(nav.host, nav.port, nav.username, nav.password, nav.domain, nav.sshForward, nav.sshProfileId, nav.sshSessionId)
             viewModel.onNavigated()
         }
     }
@@ -162,13 +163,14 @@ fun ConnectionsScreen(
         }
     }
 
-    var showAddDialog by remember { mutableStateOf(false) }
-    var showVmSetup by remember { mutableStateOf(false) }
-    var editingProfile by remember { mutableStateOf<ConnectionProfile?>(null) }
+    var showAddDialog by rememberSaveable { mutableStateOf(false) }
+    var showVmSetup by rememberSaveable { mutableStateOf(false) }
+    var editingProfileId by rememberSaveable { mutableStateOf<String?>(null) }
+    val editingProfile = editingProfileId?.let { id -> connections.firstOrNull { it.id == id } }
     var connectingProfile by remember { mutableStateOf<ConnectionProfile?>(null) }
     var deployingProfile by remember { mutableStateOf<ConnectionProfile?>(null) }
     var portForwardProfile by remember { mutableStateOf<ConnectionProfile?>(null) }
-    var quickConnectText by remember { mutableStateOf("") }
+    var quickConnectText by rememberSaveable { mutableStateOf("") }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -221,6 +223,7 @@ fun ConnectionsScreen(
             discoveredDestinations = discoveredDestinations,
             discoveredHosts = discoveredHosts,
             sshProfiles = connections,
+            sshKeys = sshKeys,
             globalSessionManagerLabel = globalSessionManagerLabel,
             subnetScanning = subnetScanning,
             onScanSubnet = { viewModel.scanSubnet() },
@@ -277,13 +280,14 @@ fun ConnectionsScreen(
             discoveredDestinations = discoveredDestinations,
             discoveredHosts = discoveredHosts,
             sshProfiles = connections,
+            sshKeys = sshKeys,
             globalSessionManagerLabel = globalSessionManagerLabel,
             subnetScanning = subnetScanning,
             onScanSubnet = { viewModel.scanSubnet() },
-            onDismiss = { editingProfile = null },
+            onDismiss = { editingProfileId = null },
             onSave = { updated ->
                 viewModel.saveConnection(updated)
-                editingProfile = null
+                editingProfileId = null
             },
         )
     }
@@ -502,12 +506,17 @@ fun ConnectionsScreen(
             if (connections.isEmpty()) {
                 EmptyState()
             } else {
-                // Build tree: top-level profiles first, then dependents nested beneath
+                // Build tree: top-level profiles first, then dependents nested beneath.
+                // A profile is a child if it has a jumpProfileId (SSH multihop) or
+                // rdpSshProfileId (RDP tunnelled through SSH).
                 val profileMap = connections.associateBy { it.id }
-                val dependentsByJump = connections
-                    .filter { it.jumpProfileId != null && it.jumpProfileId in profileMap }
-                    .groupBy { it.jumpProfileId!! }
-                val renderedAsChild = dependentsByJump.values.flatten().map { it.id }.toSet()
+                val dependentsByParent = connections
+                    .mapNotNull { profile ->
+                        val parentId = profile.jumpProfileId ?: profile.rdpSshProfileId
+                        if (parentId != null && parentId in profileMap) parentId to profile else null
+                    }
+                    .groupBy({ it.first }, { it.second })
+                val renderedAsChild = dependentsByParent.values.flatten().map { it.id }.toSet()
 
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     // Top-level: no jump host, or jump host not in saved profiles (orphan)
@@ -522,11 +531,11 @@ fun ConnectionsScreen(
                                 profileColors = profileColors,
                                 isConnecting = connectingProfileId == profile.id,
                                 hasKeys = sshKeys.isNotEmpty(),
-                                hasDependents = profile.id in dependentsByJump,
+                                hasDependents = profile.id in dependentsByParent,
                                 jumpHostLabel = profile.jumpProfileId?.let { profileMap[it]?.label },
                                 onTap = { onTapProfile(profile, profileStatuses[profile.id], sshKeys, viewModel) { connectingProfile = profile } },
                                 onRename = { newLabel -> viewModel.saveConnection(profile.copy(label = newLabel)) },
-                                onEdit = { editingProfile = profile },
+                                onEdit = { editingProfileId = profile.id },
                                 onDelete = { viewModel.deleteConnection(profile.id) },
                                 onDisconnect = { viewModel.disconnect(profile.id) },
                                 onDeployKey = { deployingProfile = profile },
@@ -535,7 +544,7 @@ fun ConnectionsScreen(
                                 onNewSession = { viewModel.openNewSession(profile.id) },
                             )
                         }
-                        val deps = dependentsByJump[profile.id].orEmpty()
+                        val deps = dependentsByParent[profile.id].orEmpty()
                         deps.forEachIndexed { index, dep ->
                             item(key = dep.id) {
                                 ConnectionTreeItem(
@@ -550,7 +559,7 @@ fun ConnectionsScreen(
                                     jumpHostLabel = null,
                                     onTap = { onTapProfile(dep, profileStatuses[dep.id], sshKeys, viewModel) { connectingProfile = dep } },
                                     onRename = { newLabel -> viewModel.saveConnection(dep.copy(label = newLabel)) },
-                                    onEdit = { editingProfile = dep },
+                                    onEdit = { editingProfileId = dep.id },
                                     onDelete = { viewModel.deleteConnection(dep.id) },
                                     onDisconnect = { viewModel.disconnect(dep.id) },
                                     onDeployKey = { deployingProfile = dep },
@@ -603,8 +612,12 @@ private fun onTapProfile(
         // VNC: connect directly (password stored in profile)
         viewModel.connect(profile, "")
     } else if (profile.isRdp) {
-        // RDP: need password from user
-        showPasswordDialog()
+        val savedPassword = profile.rdpPassword
+        if (savedPassword != null) {
+            viewModel.connect(profile, savedPassword)
+        } else {
+            showPasswordDialog()
+        }
     } else if (profile.isReticulum) {
         viewModel.connect(profile, "")
     } else if (sshKeys.isNotEmpty()) {

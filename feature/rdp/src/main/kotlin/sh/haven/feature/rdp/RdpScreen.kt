@@ -107,6 +107,7 @@ fun RdpScreen(
     pendingDomain: String? = null,
     pendingSshForward: Boolean = false,
     pendingSshSessionId: String? = null,
+    pendingSshProfileId: String? = null,
     toolbarLayout: ToolbarLayout = ToolbarLayout.DEFAULT,
     onPendingConsumed: () -> Unit = {},
     onFullscreenChanged: (Boolean) -> Unit = {},
@@ -114,27 +115,29 @@ fun RdpScreen(
 ) {
     val connected by viewModel.connected.collectAsState()
 
-    // Auto-connect when navigated from terminal
-    LaunchedEffect(pendingHost) {
-        if (pendingHost != null) {
+    // Auto-connect when navigated from a saved profile
+    LaunchedEffect(pendingHost, pendingSshSessionId) {
+        if (pendingHost != null && pendingPassword != null) {
             if (pendingSshForward && pendingSshSessionId != null) {
                 viewModel.connectViaSsh(
                     pendingSshSessionId,
-                    "localhost",
+                    pendingHost,
                     pendingPort ?: 3389,
                     pendingUsername ?: "",
-                    pendingPassword ?: "",
+                    pendingPassword,
                     pendingDomain ?: "",
                 )
-            } else {
+            } else if (!pendingSshForward) {
                 viewModel.connect(
                     pendingHost,
                     pendingPort ?: 3389,
                     pendingUsername ?: "",
-                    pendingPassword ?: "",
+                    pendingPassword,
                     pendingDomain ?: "",
                 )
             }
+            onPendingConsumed()
+        } else if (pendingHost != null) {
             onPendingConsumed()
         }
     }
@@ -196,146 +199,32 @@ fun RdpScreen(
             onDisconnect = { viewModel.disconnect() },
         )
     } else {
-        val sshSessions = remember { viewModel.getActiveSshSessions() }
-        RdpConnectForm(
+        DesktopPlaceholder(
+            protocol = "RDP",
             error = error,
-            sshSessions = sshSessions,
-            onConnect = { host, port, username, password, domain ->
-                viewModel.connect(host, port, username, password, domain)
-            },
-            onConnectViaSsh = { sessionId, host, port, username, password, domain ->
-                viewModel.connectViaSsh(sessionId, host, port, username, password, domain)
-            },
         )
     }
 }
 
 @Composable
-private fun RdpConnectForm(
+private fun DesktopPlaceholder(
+    protocol: String,
     error: String?,
-    sshSessions: List<SshTunnelOption> = emptyList(),
-    onConnect: (String, Int, String, String, String) -> Unit,
-    onConnectViaSsh: (sessionId: String, host: String, port: Int, username: String, password: String, domain: String) -> Unit = { _, _, _, _, _, _ -> },
 ) {
-    var host by rememberSaveable { mutableStateOf("") }
-    var port by rememberSaveable { mutableStateOf("3389") }
-    var username by rememberSaveable { mutableStateOf("") }
-    var password by rememberSaveable { mutableStateOf("") }
-    var domain by rememberSaveable { mutableStateOf("") }
-    var sshForward by rememberSaveable { mutableStateOf(false) }
-    var selectedSshIndex by rememberSaveable { mutableStateOf(0) }
-    var showSetupHints by rememberSaveable { mutableStateOf(false) }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
-        Spacer(Modifier.height(32.dp))
-        Text("RDP Connection", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(24.dp))
-
-        OutlinedTextField(
-            value = host,
-            onValueChange = { host = it },
-            label = { Text(if (sshForward) "Remote host" else "Host") },
-            placeholder = { Text(if (sshForward) "localhost" else "192.168.1.100") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
-
-        OutlinedTextField(
-            value = port,
-            onValueChange = { port = it },
-            label = { Text("Port") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
-
-        OutlinedTextField(
-            value = username,
-            onValueChange = { username = it },
-            label = { Text("Username") },
-            placeholder = { Text("user") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
-
-        OutlinedTextField(
-            value = password,
-            onValueChange = { password = it },
-            label = { Text("Password") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
-
-        OutlinedTextField(
-            value = domain,
-            onValueChange = { domain = it },
-            label = { Text("Domain (optional)") },
-            placeholder = { Text("WORKGROUP") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
-
-        if (sshSessions.isNotEmpty()) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                androidx.compose.material3.Checkbox(
-                    checked = sshForward,
-                    onCheckedChange = {
-                        sshForward = it
-                        if (it && host.isBlank()) host = "localhost"
-                    },
-                )
-                Text("Tunnel through SSH")
-            }
-            if (sshForward && sshSessions.size > 1) {
-                Spacer(Modifier.height(4.dp))
-                sshSessions.forEachIndexed { index, session ->
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 16.dp),
-                    ) {
-                        androidx.compose.material3.RadioButton(
-                            selected = selectedSshIndex == index,
-                            onClick = { selectedSshIndex = index },
-                        )
-                        Text(session.label, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-            }
-        }
-
+        Text(protocol, style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(16.dp))
-
-        Button(
-            onClick = {
-                val p = port.toIntOrNull() ?: 3389
-                if (sshForward && sshSessions.isNotEmpty()) {
-                    val session = sshSessions[selectedSshIndex.coerceIn(sshSessions.indices)]
-                    onConnectViaSsh(session.sessionId, host.ifBlank { "localhost" }, p, username, password, domain)
-                } else {
-                    onConnect(host, p, username, password, domain)
-                }
-            },
-            enabled = if (sshForward) sshSessions.isNotEmpty() else host.isNotBlank(),
-        ) {
-            Text("Connect")
-        }
-
-        // Error display
+        Text(
+            "Add a connection on the Connections tab",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         if (error != null) {
             Spacer(Modifier.height(16.dp))
             Card(
@@ -352,68 +241,8 @@ private fun RdpConnectForm(
                 )
             }
         }
-
-        // Setup hints
-        Spacer(Modifier.height(16.dp))
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .animateContentSize(),
-        ) {
-            TextButton(
-                onClick = { showSetupHints = !showSetupHints },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("Server setup help")
-                Spacer(Modifier.width(4.dp))
-                Icon(
-                    if (showSetupHints) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-            if (showSetupHints) {
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        text = RDP_SETUP_HINTS,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(12.dp),
-                    )
-                }
-            }
-        }
     }
 }
-
-private const val RDP_SETUP_HINTS = """Quick start:
-
-Windows:
-  Settings > System > Remote Desktop > Enable
-
-Linux (xrdp):
-  sudo apt install xrdp
-  sudo systemctl enable --now xrdp
-  # Port: 3389 (default)
-  # Username/password = your Linux account
-
-Linux (GNOME Remote Desktop):
-  Settings > Sharing > Remote Desktop > Enable
-  # Uses port 3389 by default
-
-Verify the server is running:
-  ss -tlnp | grep 3389
-
-Firewall:
-  sudo ufw allow 3389/tcp
-
-Tip: Use "Tunnel through SSH" to avoid firewall
-issues and encrypt the connection. The RDP server
-only needs to listen on localhost in that case."""
 
 // --- RDP Desktop Viewer ---
 
@@ -438,9 +267,9 @@ private fun RdpViewer(
     val imageBitmap = remember(frame) { frame.asImageBitmap() }
 
     // Zoom & pan state
-    var zoom by remember { mutableFloatStateOf(1f) }
-    var panX by remember { mutableFloatStateOf(0f) }
-    var panY by remember { mutableFloatStateOf(0f) }
+    var zoom by rememberSaveable { mutableFloatStateOf(1f) }
+    var panX by rememberSaveable { mutableFloatStateOf(0f) }
+    var panY by rememberSaveable { mutableFloatStateOf(0f) }
 
     // Keyboard
     val focusRequester = remember { FocusRequester() }
@@ -479,7 +308,7 @@ private fun RdpViewer(
                 .fillMaxWidth()
                 .background(Color.Black)
                 .onSizeChanged { viewSize = it }
-                .pointerInput(frame.width, frame.height, viewSize, zoom, panX, panY) {
+                .pointerInput(frame.width, frame.height, viewSize) {
                     val touchSlopPx = viewConfiguration.touchSlop
                     awaitEachGesture {
                         val firstDown = awaitFirstDown(

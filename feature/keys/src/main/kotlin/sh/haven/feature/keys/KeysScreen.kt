@@ -78,12 +78,7 @@ fun KeysScreen(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         uri?.let {
-            val bytes = context.contentResolver.openInputStream(it)?.use { stream ->
-                stream.readBytes()
-            }
-            if (bytes != null) {
-                viewModel.startImport(bytes)
-            }
+            viewModel.importFromUri(context, it)
         }
     }
 

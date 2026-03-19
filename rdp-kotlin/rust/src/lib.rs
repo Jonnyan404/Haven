@@ -1,7 +1,20 @@
 use std::net::{SocketAddr, TcpStream};
 use std::sync::{Arc, Mutex, RwLock};
+use log::{debug, error, info};
 
 uniffi::setup_scaffolding!();
+
+fn init_logging() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        android_logger::init_once(
+            android_logger::Config::default()
+                .with_max_level(log::LevelFilter::Debug)
+                .with_tag("RdpNative"),
+        );
+    });
+}
 
 #[derive(Debug, uniffi::Error)]
 pub enum RdpError {
@@ -101,6 +114,7 @@ pub struct RdpClient {
 impl RdpClient {
     #[uniffi::constructor]
     pub fn new(config: RdpConfig) -> Self {
+        init_logging();
         Self {
             config,
             state: Arc::new(RwLock::new(SessionState {
@@ -137,7 +151,7 @@ impl RdpClient {
             .name("rdp-session".into())
             .spawn(move || {
                 if let Err(e) = run_rdp_session(stream, &config, &state, &input_queue, &server_name, server_addr) {
-                    eprintln!("RDP session error: {}", e);
+                    error!("RDP session error: {}", e);
                 }
                 if let Ok(mut s) = state.write() {
                     s.connected = false;
@@ -263,8 +277,46 @@ fn build_config(config: &RdpConfig) -> ironrdp_connector::Config {
         ime_file_name: String::new(),
         bitmap: Some(BitmapConfig {
             lossy_compression: true,
-            color_depth: config.color_depth as u32,
-            codecs: ironrdp_pdu::rdp::capability_sets::BitmapCodecs(Vec::new()),
+            // Request 16bpp: xrdp's 32bpp uses a custom RLE variant that
+            // ironrdp doesn't decode. 16bpp uses standard interleaved RLE.
+            color_depth: 16,
+            codecs: {
+                use ironrdp_pdu::rdp::capability_sets::*;
+                BitmapCodecs(vec![
+                    Codec {
+                        id: 0, // assigned by encoder from GUID
+                        property: CodecProperty::RemoteFx(
+                            RemoteFxContainer::ClientContainer(RfxClientCapsContainer {
+                                capture_flags: CaptureFlags::empty(),
+                                caps_data: RfxCaps(RfxCapset(vec![RfxICap {
+                                    flags: RfxICapFlags::CODEC_MODE,
+                                    entropy_bits: EntropyBits::Rlgr3,
+                                }])),
+                            }),
+                        ),
+                    },
+                    Codec {
+                        id: 0,
+                        property: CodecProperty::ImageRemoteFx(
+                            RemoteFxContainer::ClientContainer(RfxClientCapsContainer {
+                                capture_flags: CaptureFlags::empty(),
+                                caps_data: RfxCaps(RfxCapset(vec![RfxICap {
+                                    flags: RfxICapFlags::CODEC_MODE,
+                                    entropy_bits: EntropyBits::Rlgr3,
+                                }])),
+                            }),
+                        ),
+                    },
+                    Codec {
+                        id: 0,
+                        property: CodecProperty::NsCodec(NsCodec {
+                            is_dynamic_fidelity_allowed: true,
+                            is_subsampling_allowed: true,
+                            color_loss_level: 3,
+                        }),
+                    },
+                ])
+            },
         }),
         dig_product_id: String::new(),
         client_dir: String::new(),
@@ -334,7 +386,11 @@ fn create_tls_config() -> Result<rustls::ClientConfig, RdpError> {
         }
     }
 
-    Ok(rustls::ClientConfig::builder()
+    // Explicitly use ring provider — auto-detection panics on Android
+    let provider = rustls::crypto::ring::default_provider();
+    Ok(rustls::ClientConfig::builder_with_provider(provider.into())
+        .with_safe_default_protocol_versions()
+        .map_err(|_| RdpError::TlsError)?
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(AcceptAnyServerCert))
         .with_no_client_auth())
@@ -362,7 +418,7 @@ fn run_rdp_session(
     let mut framed = Framed::new(stream);
     let should_upgrade = connect_begin(&mut framed, &mut connector)
         .map_err(|e| {
-            eprintln!("connect_begin failed: {:?}", e);
+            error!("connect_begin failed: {:?}", e);
             RdpError::ConnectionFailed
         })?;
 
@@ -421,7 +477,7 @@ fn run_rdp_session(
         None, // no Kerberos config
     ).map_err(|e| {
         let msg = format!("{:?}", e);
-        eprintln!("connect_finalize failed: {}", msg);
+        error!("connect_finalize failed: {}", msg);
         if msg.contains("Authentication") || msg.contains("Credssp") || msg.contains("LOGON_FAILED") {
             RdpError::AuthenticationFailed
         } else {
@@ -432,19 +488,24 @@ fn run_rdp_session(
     // Session is connected
     let fb_width = connection_result.desktop_size.width;
     let fb_height = connection_result.desktop_size.height;
+    info!("RDP connected, desktop {}x{}", fb_width, fb_height);
 
     let mut image = DecodedImage::new(PixelFormat::RgbA32, fb_width, fb_height);
 
-    if let Ok(mut s) = state.write() {
+    let resize_cb = {
+        let mut s = state.write().map_err(|_| RdpError::IoError)?;
         s.connected = true;
         s.framebuffer = Some(FrameData {
             width: fb_width,
             height: fb_height,
             pixels: vec![0u8; fb_width as usize * fb_height as usize * 4],
         });
-        if let Some(ref cb) = s.frame_callback {
-            cb.on_resize(fb_width, fb_height);
-        }
+        s.frame_callback.clone()
+    };
+    // Invoke callback outside the lock to avoid deadlock when Kotlin
+    // calls getFramebuffer() from within the callback.
+    if let Some(cb) = resize_cb {
+        cb.on_resize(fb_width, fb_height);
     }
 
     let mut active_stage = ActiveStage::new(connection_result);
@@ -536,13 +597,13 @@ fn run_rdp_session(
                         for output in outputs {
                             if let ActiveStageOutput::ResponseFrame(frame) = output {
                                 if let Err(e) = tls_framed.write_all(&frame) {
-                                    eprintln!("Write input error: {:?}", e);
+                                    error!("Write input error: {:?}", e);
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("Input processing error: {:?}", e);
+                        error!("Input processing error: {:?}", e);
                     }
                 }
             }
@@ -557,15 +618,17 @@ fn run_rdp_session(
                             match output {
                                 ActiveStageOutput::ResponseFrame(response) => {
                                     if let Err(e) = tls_framed.write_all(&response) {
-                                        eprintln!("Write response error: {:?}", e);
+                                        error!("Write response error: {:?}", e);
                                         break;
                                     }
                                 }
                                 ActiveStageOutput::GraphicsUpdate(rect) => {
+                                    debug!("GraphicsUpdate at ({},{}) to ({},{})",
+                                        rect.left, rect.top, rect.right, rect.bottom);
                                     update_framebuffer(state, &image, &rect);
                                 }
                                 ActiveStageOutput::Terminate(reason) => {
-                                    eprintln!("Server disconnect: {}", reason);
+                                    error!("Server disconnect: {}", reason);
                                     break;
                                 }
                                 ActiveStageOutput::DeactivateAll(_cas) => {
@@ -578,8 +641,18 @@ fn run_rdp_session(
                         }
                     }
                     Err(e) => {
-                        eprintln!("Session process error: {:?}", e);
-                        break;
+                        let msg = format!("{:?}", e);
+                        if msg.contains("unhandled") || msg.contains("unsupported") {
+                            // Try to decode as slow-path bitmap update
+                            if try_handle_slow_path_bitmap(&frame, state) {
+                                debug!("Decoded slow-path bitmap update");
+                            } else {
+                                debug!("Skipping unhandled PDU: {}", msg);
+                            }
+                        } else {
+                            error!("Session process error: {}", msg);
+                            break;
+                        }
                     }
                 }
             }
@@ -588,13 +661,235 @@ fn run_rdp_session(
                     // No data available, continue loop to process input
                     continue;
                 }
-                eprintln!("Read PDU error: {:?}", e);
+                error!("Read PDU error: {:?}", e);
                 break;
             }
         }
     }
 
     Ok(())
+}
+
+/// Try to decode a slow-path bitmap update from the raw X224 frame
+/// and blit it directly into our ARGB framebuffer.
+fn try_handle_slow_path_bitmap(
+    frame: &[u8],
+    state: &Arc<RwLock<SessionState>>,
+) -> bool {
+    use ironrdp_pdu::{Decode, cursor::ReadCursor};
+    use ironrdp_pdu::bitmap::BitmapUpdateData;
+
+    // The ShareDataPdu::Update stores raw bitmap bytes. Scan for the
+    // UPDATETYPE_BITMAP marker (0x0001 LE) in the frame.
+    // Decode the X224/MCS/ShareControl/ShareData headers to extract the
+    // Update PDU payload.
+    use ironrdp_connector::legacy::{decode_send_data_indication, decode_io_channel, IoChannelPdu};
+    use ironrdp_pdu::rdp::headers::ShareDataPdu;
+
+    let ctx = match decode_send_data_indication(frame) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let io_pdu = match decode_io_channel(ctx) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let update_bytes = match io_pdu {
+        IoChannelPdu::Data(data_ctx) => match data_ctx.pdu {
+            ShareDataPdu::Update(bytes) => bytes,
+            _ => return false,
+        },
+        _ => return false,
+    };
+
+    debug!("Update PDU payload: {} bytes", update_bytes.len());
+
+    let mut cursor = ReadCursor::new(&update_bytes);
+    let bitmap_update = match BitmapUpdateData::decode(&mut cursor) {
+        Ok(u) => u,
+        Err(e) => {
+            debug!("BitmapUpdateData decode failed: {:?}", e);
+            return false;
+        }
+    };
+
+    debug!("Slow-path bitmap: {} rectangles", bitmap_update.rectangles.len());
+
+    // Get framebuffer dimensions
+    let (fb_width, fb_height) = {
+        let s = match state.read() {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        match &s.framebuffer {
+            Some(fb) => (fb.width as usize, fb.height as usize),
+            None => return false,
+        }
+    };
+
+    let mut any_updates = false;
+
+    for update in &bitmap_update.rectangles {
+        let w = update.width as usize;
+        let h = update.height as usize;
+        let bpp = update.bits_per_pixel;
+
+        // Decode bitmap data to raw pixels
+        let is_compressed = update.compression_flags.contains(
+            ironrdp_pdu::bitmap::Compression::BITMAP_COMPRESSION
+        );
+        let has_hdr = update.compressed_data_header.is_some();
+        debug!("  rect {}x{} at ({},{}) bpp={} compressed={} rdp6_hdr={} data_len={}",
+            w, h, update.rectangle.left, update.rectangle.top,
+            bpp, is_compressed, has_hdr, update.bitmap_data.len());
+
+        let mut decoded_rgb = Vec::new();
+        let pixel_data: Option<(&[u8], u16, bool)>; // (data, bpp, flip)
+
+        if is_compressed {
+            if bpp == 32 && has_hdr {
+                // RDP6 Bitmap Compressed Stream (has CompressedDataHeader)
+                let mut decoder = ironrdp_graphics::rdp6::BitmapStreamDecoder::default();
+                if decoder.decode_bitmap_stream_to_rgb24(
+                    update.bitmap_data, &mut decoded_rgb, w, h
+                ).is_ok() {
+                    pixel_data = Some((&decoded_rgb, 24, true));
+                } else {
+                    continue;
+                }
+            } else if bpp == 32 {
+                // xrdp sends 32bpp as 24bpp interleaved RLE (3 bytes BGR per pixel)
+                if ironrdp_graphics::rle::decompress_24_bpp(
+                    update.bitmap_data, &mut decoded_rgb, w, h
+                ).is_ok() {
+                    pixel_data = Some((&decoded_rgb, 24, true));
+                } else {
+                    debug!("  32bpp RLE decompress failed, data_len={}", update.bitmap_data.len());
+                    continue;
+                }
+            } else {
+                // Interleaved RLE compression for <32bpp
+                if ironrdp_graphics::rle::decompress(
+                    update.bitmap_data, &mut decoded_rgb, w, h, bpp as usize
+                ).is_ok() {
+                    pixel_data = Some((&decoded_rgb, bpp, true));
+                } else {
+                    continue;
+                }
+            }
+        } else {
+            pixel_data = Some((update.bitmap_data, bpp, true));
+        }
+
+        let (pixels, effective_bpp, flip) = match pixel_data {
+            Some(p) => p,
+            None => continue,
+        };
+
+        // Blit into ARGB framebuffer
+        let rect = &update.rectangle;
+        let dst_x = rect.left as usize;
+        let dst_y = rect.top as usize;
+
+        if let Ok(mut s) = state.write() {
+            if let Some(ref mut fb) = s.framebuffer {
+                let fb_data = &mut fb.pixels;
+
+                for row in 0..h {
+                    let src_row = if flip { h - 1 - row } else { row };
+                    let dst_row_y = dst_y + row;
+                    if dst_row_y >= fb_height { break; }
+
+                    for col in 0..w {
+                        let dst_col_x = dst_x + col;
+                        if dst_col_x >= fb_width { break; }
+
+                        // Read source pixel
+                        let (r, g, b) = match effective_bpp {
+                            24 => {
+                                let si = (src_row * w + col) * 3;
+                                if si + 2 >= pixels.len() { continue; }
+                                // RLE 24bpp output is BGR (LE u24): [B, G, R]
+                                let b_val = pixels[si];
+                                let g_val = pixels[si + 1];
+                                let r_val = pixels[si + 2];
+                                (r_val, g_val, b_val)
+                            }
+                            16 => {
+                                let si = (src_row * w + col) * 2;
+                                if si + 1 >= pixels.len() { continue; }
+                                let val = u16::from_le_bytes([pixels[si], pixels[si + 1]]);
+                                let r5 = ((val >> 11) & 0x1F) as u8;
+                                let g6 = ((val >> 5) & 0x3F) as u8;
+                                let b5 = (val & 0x1F) as u8;
+                                ((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2))
+                            }
+                            32 => {
+                                let si = (src_row * w + col) * 4;
+                                if si + 3 >= pixels.len() { continue; }
+                                // BGRX format
+                                (pixels[si + 2], pixels[si + 1], pixels[si])
+                            }
+                            _ => continue,
+                        };
+
+                        // ARGB_8888 in native little-endian: bytes [B, G, R, A]
+                        let di = (dst_row_y * fb_width + dst_col_x) * 4;
+                        if di + 3 < fb_data.len() {
+                            fb_data[di] = b;
+                            fb_data[di + 1] = g;
+                            fb_data[di + 2] = r;
+                            fb_data[di + 3] = 0xFF;
+                        }
+                    }
+                }
+
+                // Verify a pixel was written
+                let check_di = (dst_y * fb_width + dst_x) * 4;
+                if check_di + 3 < fb_data.len() {
+                    debug!("  Written pixel at ({},{}) = [{:02x},{:02x},{:02x},{:02x}]",
+                        dst_x, dst_y, fb_data[check_di], fb_data[check_di+1],
+                        fb_data[check_di+2], fb_data[check_di+3]);
+                }
+
+                // Track dirty rect
+                s.dirty_rects.push(RdpRect {
+                    x: rect.left,
+                    y: rect.top,
+                    width: w as u16,
+                    height: h as u16,
+                });
+
+                any_updates = true;
+            }
+        }
+    }
+
+    // Log a sample pixel for color debugging
+    if any_updates {
+        if let Ok(s) = state.read() {
+            if let Some(ref fb) = s.framebuffer {
+                // Sample pixel near center
+                let cx = fb_width / 2;
+                let cy = fb_height / 2;
+                let pi = (cy * fb_width + cx) * 4;
+                if pi + 3 < fb.pixels.len() {
+                    debug!("Sample pixel ({},{}) ARGB: [{:02x},{:02x},{:02x},{:02x}]",
+                        cx, cy, fb.pixels[pi], fb.pixels[pi+1], fb.pixels[pi+2], fb.pixels[pi+3]);
+                }
+            }
+        }
+    }
+
+    // Notify callback outside the lock
+    if any_updates {
+        let cb = state.read().ok().and_then(|s| s.frame_callback.clone());
+        if let Some(cb) = cb {
+            cb.on_frame_update(0, 0, fb_width as u16, fb_height as u16);
+        }
+    }
+
+    any_updates
 }
 
 /// Copy updated region from DecodedImage to our ARGB framebuffer
@@ -610,19 +905,10 @@ fn update_framebuffer(
     let fb_height = image.height() as usize;
     let pixel_data = image.data();
 
-    // Convert BGRA (ironrdp) to ARGB (Android Bitmap)
+    // Convert BGRA (ironrdp RgbA32) to Android ARGB_8888 native LE: [B,G,R,A]
+    // ironrdp BGRA is already [B,G,R,A] in memory — same layout!
     let pixel_count = fb_width * fb_height;
-    let mut argb = vec![0u8; pixel_count * 4];
-
-    for i in 0..pixel_count {
-        let si = i * 4;
-        if si + 3 < pixel_data.len() {
-            argb[si] = pixel_data[si + 3]; // A
-            argb[si + 1] = pixel_data[si + 2]; // R
-            argb[si + 2] = pixel_data[si + 1]; // G
-            argb[si + 3] = pixel_data[si]; // B
-        }
-    }
+    let argb = pixel_data[..pixel_count * 4].to_vec();
 
     let rdp_rect = RdpRect {
         x: rect.left,
@@ -631,15 +917,22 @@ fn update_framebuffer(
         height: rect.height(),
     };
 
-    if let Ok(mut s) = state.write() {
+    let frame_cb = {
+        let mut s = match state.write() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
         s.framebuffer = Some(FrameData {
             width: fb_width as u16,
             height: fb_height as u16,
             pixels: argb,
         });
         s.dirty_rects.push(rdp_rect.clone());
-        if let Some(ref cb) = s.frame_callback {
-            cb.on_frame_update(rdp_rect.x, rdp_rect.y, rdp_rect.width, rdp_rect.height);
-        }
+        s.frame_callback.clone()
+    };
+    // Invoke callback outside the lock — Kotlin's onFrameUpdate calls
+    // getFramebuffer() which needs a read lock.
+    if let Some(cb) = frame_cb {
+        cb.on_frame_update(rdp_rect.x, rdp_rect.y, rdp_rect.width, rdp_rect.height);
     }
 }

@@ -37,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +52,7 @@ fun ConnectionEditDialog(
     discoveredDestinations: List<ConnectionsViewModel.DiscoveredDestination> = emptyList(),
     discoveredHosts: List<DiscoveredHost> = emptyList(),
     sshProfiles: List<ConnectionProfile> = emptyList(),
+    sshKeys: List<sh.haven.core.data.db.entities.SshKey> = emptyList(),
     globalSessionManagerLabel: String = "None",
     subnetScanning: Boolean = false,
     onScanSubnet: () -> Unit = {},
@@ -66,7 +68,7 @@ fun ConnectionEditDialog(
         existing?.isReticulum == true -> "RETICULUM"
         else -> "SSH"
     }
-    var selectedTransport by remember { mutableStateOf(initialTransport) }
+    var selectedTransport by rememberSaveable { mutableStateOf(initialTransport) }
     // Derived connectionType for field visibility
     val connectionType = when (selectedTransport) {
         "RETICULUM" -> "RETICULUM"
@@ -74,9 +76,9 @@ fun ConnectionEditDialog(
         "RDP" -> "RDP"
         else -> "SSH"
     }
-    var label by remember { mutableStateOf(existing?.label ?: "") }
-    var host by remember { mutableStateOf(existing?.host ?: "") }
-    var port by remember {
+    var label by rememberSaveable { mutableStateOf(existing?.label ?: "") }
+    var host by rememberSaveable { mutableStateOf(existing?.host ?: "") }
+    var port by rememberSaveable {
         mutableStateOf(
             when {
                 existing?.isVnc == true -> (existing.vncPort ?: 5900).toString()
@@ -85,24 +87,28 @@ fun ConnectionEditDialog(
             }
         )
     }
-    var username by remember { mutableStateOf(existing?.username ?: "") }
-    var rdpUsername by remember { mutableStateOf(existing?.rdpUsername ?: "") }
-    var rdpDomain by remember { mutableStateOf(existing?.rdpDomain ?: "") }
-    var vncPassword by remember { mutableStateOf(existing?.vncPassword ?: "") }
-    var destinationHash by remember { mutableStateOf(existing?.destinationHash ?: "") }
-    var jumpProfileId by remember { mutableStateOf(existing?.jumpProfileId) }
-    var sshOptions by remember { mutableStateOf(existing?.sshOptions ?: "") }
-    var selectedSessionManager by remember { mutableStateOf(existing?.sessionManager) }
-    var etPort by remember { mutableStateOf(existing?.etPort?.toString() ?: "2022") }
-    var localSideband by remember {
+    var username by rememberSaveable { mutableStateOf(existing?.username ?: "") }
+    var rdpUsername by rememberSaveable { mutableStateOf(existing?.rdpUsername ?: "") }
+    var rdpPassword by rememberSaveable { mutableStateOf(existing?.rdpPassword ?: "") }
+    var rdpDomain by rememberSaveable { mutableStateOf(existing?.rdpDomain ?: "") }
+    var rdpSshForward by rememberSaveable { mutableStateOf(existing?.rdpSshForward ?: false) }
+    var rdpSshProfileId by rememberSaveable { mutableStateOf(existing?.rdpSshProfileId) }
+    var vncPassword by rememberSaveable { mutableStateOf(existing?.vncPassword ?: "") }
+    var destinationHash by rememberSaveable { mutableStateOf(existing?.destinationHash ?: "") }
+    var jumpProfileId by rememberSaveable { mutableStateOf(existing?.jumpProfileId) }
+    var keyId by rememberSaveable { mutableStateOf(existing?.keyId) }
+    var sshOptions by rememberSaveable { mutableStateOf(existing?.sshOptions ?: "") }
+    var selectedSessionManager by rememberSaveable { mutableStateOf(existing?.sessionManager) }
+    var etPort by rememberSaveable { mutableStateOf(existing?.etPort?.toString() ?: "2022") }
+    var localSideband by rememberSaveable {
         mutableStateOf(
             existing == null ||
                 (existing.reticulumHost in listOf("127.0.0.1", "localhost", "::1") &&
                     existing.reticulumPort == 37428),
         )
     }
-    var rnsHost by remember { mutableStateOf(existing?.reticulumHost ?: "") }
-    var rnsPort by remember { mutableStateOf(existing?.reticulumPort?.toString() ?: "4242") }
+    var rnsHost by rememberSaveable { mutableStateOf(existing?.reticulumHost ?: "") }
+    var rnsPort by rememberSaveable { mutableStateOf(existing?.reticulumPort?.toString() ?: "4242") }
 
     val isEdit = existing != null
     val title = if (isEdit) "Edit Connection" else "New Connection"
@@ -146,6 +152,16 @@ fun ConnectionEditDialog(
                                 onClick = {
                                     selectedTransport = value
                                     transportExpanded = false
+                                    // Update port to transport default when switching
+                                    val defaultPort = when (value) {
+                                        "VNC" -> "5900"
+                                        "RDP" -> "3389"
+                                        "ET" -> "22"
+                                        else -> "22"
+                                    }
+                                    if (port == "22" || port == "5900" || port == "3389" || port == "2022") {
+                                        port = defaultPort
+                                    }
                                 },
                             )
                         }
@@ -239,6 +255,15 @@ fun ConnectionEditDialog(
                     }
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
+                        value = rdpPassword,
+                        onValueChange = { rdpPassword = it },
+                        label = { Text("Password (optional)") },
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
                         value = rdpDomain,
                         onValueChange = { rdpDomain = it },
                         label = { Text("Domain (optional)") },
@@ -246,12 +271,63 @@ fun ConnectionEditDialog(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Requires xrdp (Linux) or Remote Desktop (Windows)",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Spacer(Modifier.height(8.dp))
+                    FilterChip(
+                        selected = rdpSshForward,
+                        onClick = {
+                            rdpSshForward = !rdpSshForward
+                            if (rdpSshForward) {
+                                if (host.isBlank()) host = "localhost"
+                            } else {
+                                rdpSshProfileId = null
+                                if (host == "localhost") host = ""
+                            }
+                        },
+                        label = { Text("SSH tunnel") },
                     )
+                    if (rdpSshForward) {
+                        val sshCandidates = sshProfiles.filter { it.isSsh }
+                        if (sshCandidates.isNotEmpty()) {
+                            Spacer(Modifier.height(8.dp))
+                            var sshExpanded by remember { mutableStateOf(false) }
+                            val selectedSsh = sshCandidates.firstOrNull { it.id == rdpSshProfileId }
+                            ExposedDropdownMenuBox(
+                                expanded = sshExpanded,
+                                onExpandedChange = { sshExpanded = it },
+                            ) {
+                                OutlinedTextField(
+                                    value = selectedSsh?.label ?: "Select SSH connection",
+                                    onValueChange = {},
+                                    readOnly = true,
+                                    label = { Text("SSH connection") },
+                                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(sshExpanded) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                                )
+                                ExposedDropdownMenu(
+                                    expanded = sshExpanded,
+                                    onDismissRequest = { sshExpanded = false },
+                                ) {
+                                    sshCandidates.forEach { candidate ->
+                                        DropdownMenuItem(
+                                            text = { Text(candidate.label) },
+                                            onClick = {
+                                                rdpSshProfileId = candidate.id
+                                                sshExpanded = false
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        } else {
+                            Text(
+                                "Add an SSH connection first",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
                 } else if (connectionType == "SSH") {
                     // Discovered hosts — filter by typed prefix
                     val filteredHosts = remember(discoveredHosts, host) {
@@ -563,6 +639,58 @@ fun ConnectionEditDialog(
                         maxLines = 4,
                         modifier = Modifier.fillMaxWidth(),
                     )
+
+                    // SSH key selector
+                    if (sshKeys.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        var keyExpanded by remember { mutableStateOf(false) }
+                        val selectedKey = sshKeys.firstOrNull { it.id == keyId }
+                        ExposedDropdownMenuBox(
+                            expanded = keyExpanded,
+                            onExpandedChange = { keyExpanded = it },
+                        ) {
+                            OutlinedTextField(
+                                value = selectedKey?.label ?: "Any (try all keys)",
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("SSH Key") },
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(keyExpanded) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                            )
+                            ExposedDropdownMenu(
+                                expanded = keyExpanded,
+                                onDismissRequest = { keyExpanded = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Any (try all keys)") },
+                                    onClick = {
+                                        keyId = null
+                                        keyExpanded = false
+                                    },
+                                )
+                                sshKeys.forEach { key ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Column {
+                                                Text(key.label)
+                                                Text(
+                                                    "${key.keyType} ${key.fingerprintSha256.take(20)}...",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                        },
+                                        onClick = {
+                                            keyId = key.id
+                                            keyExpanded = false
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
                 } else {
                     // Discovered destinations — filter by typed prefix, cap at 8
                     val filtered = remember(discoveredDestinations, destinationHash) {
@@ -654,7 +782,7 @@ fun ConnectionEditDialog(
             val canSave = when (connectionType) {
                 "SSH" -> host.isNotBlank() && username.isNotBlank()
                 "VNC" -> host.isNotBlank()
-                "RDP" -> host.isNotBlank() && rdpUsername.isNotBlank()
+                "RDP" -> host.isNotBlank() && rdpUsername.isNotBlank() && (!rdpSshForward || rdpSshProfileId != null)
                 else -> destinationHash.length == 32 && (localSideband || rnsHost.isNotBlank())
             }
             TextButton(
@@ -689,7 +817,10 @@ fun ConnectionEditDialog(
                             connectionType = "RDP",
                             rdpPort = rdpPortInt,
                             rdpUsername = rdpUsername.ifBlank { null },
+                            rdpPassword = rdpPassword.ifBlank { null },
                             rdpDomain = rdpDomain.ifBlank { null },
+                            rdpSshForward = rdpSshForward,
+                            rdpSshProfileId = if (rdpSshForward) rdpSshProfileId else null,
                         )
                     } else if (connectionType == "SSH") {
                         val portInt = port.toIntOrNull() ?: 22
@@ -706,6 +837,7 @@ fun ConnectionEditDialog(
                             connectionType = "SSH",
                             destinationHash = null,
                             jumpProfileId = jumpProfileId,
+                            keyId = keyId,
                             sshOptions = sshOptions.ifBlank { null },
                             sessionManager = selectedSessionManager,
                             useMosh = selectedTransport == "MOSH",

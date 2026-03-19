@@ -13,15 +13,16 @@ repositories {
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
+    // Keep version in sync with [versions.jna] in gradle/libs.versions.toml
+    compileOnly("net.java.dev.jna:jna:5.14.0")
 
     testImplementation("junit:junit:4.13.2")
 }
 
-// Include pre-built native libraries and generated Kotlin sources
+// Generated Kotlin sources live under kotlin/ (see tools/build-android.sh)
 sourceSets {
     main {
         kotlin.srcDir("kotlin")
-        resources.srcDir("jniLibs")
     }
 }
 
@@ -36,25 +37,4 @@ kotlin {
     }
 }
 
-publishing {
-    publications {
-        create<MavenPublication>("maven") {
-            from(components["java"])
-            artifactId = "rdp-transport"
-            pom {
-                name.set("rdp-transport")
-                description.set("IronRDP + UniFFI Kotlin bindings for Android RDP client")
-                url.set("https://github.com/GlassOnTin/Haven")
-                licenses {
-                    license {
-                        name.set("GNU General Public License v3.0")
-                        url.set("https://www.gnu.org/licenses/gpl-3.0.html")
-                    }
-                }
-                scm {
-                    url.set("https://github.com/GlassOnTin/Haven")
-                }
-            }
-        }
-    }
-}
+// No publishing block needed — consumed via includeBuild() in settings.gradle.kts

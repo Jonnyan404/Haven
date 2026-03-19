@@ -64,6 +64,23 @@ class KeysViewModel @Inject constructor(
         }
     }
 
+    fun importFromUri(context: android.content.Context, uri: android.net.Uri) {
+        viewModelScope.launch {
+            try {
+                val bytes = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                }
+                if (bytes == null || bytes.isEmpty()) {
+                    _error.value = "Could not read key file"
+                    return@launch
+                }
+                startImport(bytes)
+            } catch (e: Exception) {
+                _error.value = "Failed to read file: ${e.message}"
+            }
+        }
+    }
+
     fun startImport(fileBytes: ByteArray) {
         viewModelScope.launch {
             _generating.value = true

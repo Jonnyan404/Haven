@@ -190,125 +190,26 @@ fun VncScreen(
             onDisconnect = { viewModel.disconnect() },
         )
     } else {
-        val sshSessions = remember { viewModel.getActiveSshSessions() }
-        VncConnectForm(
-            error = error,
-            sshSessions = sshSessions,
-            onConnect = { host, port, password ->
-                viewModel.connect(host, port, password)
-            },
-            onConnectViaSsh = { sessionId, host, port, password ->
-                viewModel.connectViaSsh(sessionId, host, port, password)
-            },
-        )
+        VncPlaceholder(error = error)
     }
 }
 
 @Composable
-private fun VncConnectForm(
-    error: String?,
-    sshSessions: List<SshTunnelOption> = emptyList(),
-    onConnect: (String, Int, String?) -> Unit,
-    onConnectViaSsh: (sessionId: String, host: String, port: Int, password: String?) -> Unit = { _, _, _, _ -> },
-) {
-    var host by rememberSaveable { mutableStateOf("") }
-    var port by rememberSaveable { mutableStateOf("5900") }
-    var password by rememberSaveable { mutableStateOf("") }
-    var sshForward by rememberSaveable { mutableStateOf(false) }
-    var selectedSshIndex by rememberSaveable { mutableStateOf(0) }
-    var showSetupHints by rememberSaveable { mutableStateOf(false) }
-
+private fun VncPlaceholder(error: String?) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
-        Spacer(Modifier.height(32.dp))
-        Text("VNC Connection", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(24.dp))
-
-        OutlinedTextField(
-            value = host,
-            onValueChange = { host = it },
-            label = { Text(if (sshForward) "Remote host" else "Host") },
-            placeholder = { Text(if (sshForward) "localhost" else "192.168.1.100") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
-
-        OutlinedTextField(
-            value = port,
-            onValueChange = { port = it },
-            label = { Text("Port") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
-
-        OutlinedTextField(
-            value = password,
-            onValueChange = { password = it },
-            label = { Text("Password") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
-
-        if (sshSessions.isNotEmpty()) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                androidx.compose.material3.Checkbox(
-                    checked = sshForward,
-                    onCheckedChange = {
-                        sshForward = it
-                        if (it && host.isBlank()) host = "localhost"
-                    },
-                )
-                Text("Tunnel through SSH")
-            }
-            if (sshForward && sshSessions.size > 1) {
-                Spacer(Modifier.height(4.dp))
-                sshSessions.forEachIndexed { index, session ->
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 16.dp),
-                    ) {
-                        androidx.compose.material3.RadioButton(
-                            selected = selectedSshIndex == index,
-                            onClick = { selectedSshIndex = index },
-                        )
-                        Text(session.label, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-            }
-        }
-
+        Text("VNC", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(16.dp))
-
-        Button(
-            onClick = {
-                val p = port.toIntOrNull() ?: 5900
-                val pw = password.ifEmpty { null }
-                if (sshForward && sshSessions.isNotEmpty()) {
-                    val session = sshSessions[selectedSshIndex.coerceIn(sshSessions.indices)]
-                    onConnectViaSsh(session.sessionId, host.ifBlank { "localhost" }, p, pw)
-                } else {
-                    onConnect(host, p, pw)
-                }
-            },
-            enabled = if (sshForward) sshSessions.isNotEmpty() else host.isNotBlank(),
-        ) {
-            Text("Connect")
-        }
-
-        // Error display
+        Text(
+            "Add a connection on the Connections tab",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         if (error != null) {
             Spacer(Modifier.height(16.dp))
             Card(
@@ -325,67 +226,8 @@ private fun VncConnectForm(
                 )
             }
         }
-
-        // Setup hints
-        Spacer(Modifier.height(16.dp))
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .animateContentSize(),
-        ) {
-            TextButton(
-                onClick = { showSetupHints = !showSetupHints },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("Server setup help")
-                Spacer(Modifier.width(4.dp))
-                Icon(
-                    if (showSetupHints) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-            if (showSetupHints) {
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        text = SETUP_HINTS,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(12.dp),
-                    )
-                }
-            }
-        }
     }
 }
-
-private const val SETUP_HINTS = """Quick start (run on the remote host):
-
-TigerVNC (recommended):
-  sudo apt install tigervnc-standalone-server
-  vncserver :1 -geometry 1920x1080 -depth 24
-  # Port: 5901 (5900 + display number)
-
-x11vnc (share existing desktop):
-  sudo apt install x11vnc
-  x11vnc -display :0 -rfbport 5900 -forever
-
-wayvnc (Wayland):
-  wayvnc 0.0.0.0 5900
-
-Verify the server is running:
-  ss -tlnp | grep 590
-
-Firewall (if not tunneling via SSH):
-  sudo ufw allow 5900/tcp
-
-Tip: Use "Tunnel through SSH" to avoid firewall
-issues and encrypt the connection. The VNC server
-only needs to listen on localhost in that case."""
 
 @Composable
 private fun VncViewer(

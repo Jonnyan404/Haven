@@ -32,6 +32,7 @@ android {
 
 dependencies {
     api("sh.haven:rdp-transport:0.1.0")
+    implementation(libs.jna) { artifact { type = "aar" } }
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
     implementation(libs.hilt.android)

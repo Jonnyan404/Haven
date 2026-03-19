@@ -29,7 +29,11 @@ object SshKeyImporter {
      */
     fun import(fileBytes: ByteArray, passphrase: String? = null): ImportedKey {
         val jsch = JSch()
-        val kpair = KeyPair.load(jsch, fileBytes, null)
+        val kpair = try {
+            KeyPair.load(jsch, fileBytes, null)
+        } catch (e: Exception) {
+            throw IllegalArgumentException("Unrecognised key format: ${e.message}", e)
+        }
 
         try {
             if (kpair.isEncrypted) {
@@ -65,10 +69,12 @@ object SshKeyImporter {
 
     /** Read the key type name from the first field of an SSH wire format public key blob. */
     private fun readKeyTypeName(pubBlob: ByteArray): String {
+        if (pubBlob.size < 4) throw IllegalArgumentException("Public key blob too short")
         val len = ((pubBlob[0].toInt() and 0xFF) shl 24) or
                 ((pubBlob[1].toInt() and 0xFF) shl 16) or
                 ((pubBlob[2].toInt() and 0xFF) shl 8) or
                 (pubBlob[3].toInt() and 0xFF)
+        if (len <= 0 || 4 + len > pubBlob.size) throw IllegalArgumentException("Invalid public key blob")
         return String(pubBlob, 4, len, Charsets.US_ASCII)
     }
 }

@@ -204,7 +204,7 @@ class ConnectionsViewModel @Inject constructor(
     val navigateToVnc: StateFlow<VncNavigation?> = _navigateToVnc.asStateFlow()
 
     /** Emitted to navigate to RDP screen with connection params. */
-    data class RdpNavigation(val host: String, val port: Int, val username: String, val password: String, val domain: String)
+    data class RdpNavigation(val host: String, val port: Int, val username: String, val password: String, val domain: String, val sshForward: Boolean = false, val sshProfileId: String? = null, val sshSessionId: String? = null)
     private val _navigateToRdp = MutableStateFlow<RdpNavigation?>(null)
     val navigateToRdp: StateFlow<RdpNavigation?> = _navigateToRdp.asStateFlow()
 
@@ -415,11 +415,33 @@ class ConnectionsViewModel @Inject constructor(
         val host = profile.host
         val port = profile.rdpPort
         val username = profile.rdpUsername ?: profile.username
+        val rdpPassword = password.ifBlank { profile.rdpPassword ?: "" }
         val domain = profile.rdpDomain ?: ""
         viewModelScope.launch {
             repository.markConnected(profile.id)
+            val sshProfileId = profile.rdpSshProfileId
+            if (profile.rdpSshForward && sshProfileId != null) {
+                // Auto-connect SSH tunnel host (reuses existing session if available)
+                try {
+                    _connectingProfileId.value = profile.id
+                    // Pass empty password — SSH profile uses its own auth (key or password)
+                    val (sshSessionId, _) = connectJumpHost(sshProfileId, "")
+                    _navigateToRdp.value = RdpNavigation(
+                        host, port, username, rdpPassword, domain,
+                        sshForward = true,
+                        sshProfileId = sshProfileId,
+                        sshSessionId = sshSessionId,
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to connect SSH tunnel host for RDP", e)
+                    _error.value = "SSH tunnel: ${e.message}"
+                } finally {
+                    _connectingProfileId.value = null
+                }
+            } else {
+                _navigateToRdp.value = RdpNavigation(host, port, username, rdpPassword, domain, profile.rdpSshForward, profile.rdpSshProfileId)
+            }
         }
-        _navigateToRdp.value = RdpNavigation(host, port, username, password, domain)
     }
 
     private fun connectSsh(profile: ConnectionProfile, password: String, keyOnly: Boolean) {
