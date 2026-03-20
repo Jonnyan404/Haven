@@ -107,11 +107,22 @@ class SshConnectionService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+        val contentPending = launchIntent?.let {
+            PendingIntent.getActivity(
+                this, 1, it,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        }
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_haven_notification)
             .setContentTitle("Haven — $count active session${if (count != 1) "s" else ""}")
             .setContentText(labels.ifEmpty { "Connecting..." })
             .setOngoing(true)
+            .setContentIntent(contentPending)
             .addAction(
                 R.drawable.ic_haven_notification,
                 "Disconnect All",
