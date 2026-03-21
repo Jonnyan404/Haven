@@ -21,6 +21,7 @@
 # Keep smbj (reflection-based protocol handling)
 -keep class com.hierynomus.** { *; }
 -keep class net.engio.** { *; }
+-dontwarn javax.el.**
 
 # Keep Hilt generated classes
 -keep class dagger.hilt.** { *; }
