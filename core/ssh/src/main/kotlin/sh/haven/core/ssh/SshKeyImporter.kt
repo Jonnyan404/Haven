@@ -77,8 +77,8 @@ object SshKeyImporter {
                     out.toByteArray()
                 } catch (_: UnsupportedOperationException) {
                     // JSch can't re-serialize Ed25519 keys via writePrivateKey().
-                    // Extract the raw 32-byte seed via reflection instead.
-                    extractEd25519Seed(kpair) ?: fileBytes
+                    // Extract prv_array + pub_array (64 bytes) via reflection.
+                    extractEd25519KeyMaterial(kpair) ?: fileBytes
                 }
             } else {
                 fileBytes
@@ -96,26 +96,42 @@ object SshKeyImporter {
     }
 
     /**
-     * Extract the raw Ed25519 private key seed (32 bytes) from a decrypted JSch KeyPair
-     * via reflection. JSch stores it in KeyPairEdDSA.prv_array but has no public accessor.
-     * KeyPairEd25519 extends KeyPairEdDSA, so we walk the class hierarchy.
-     * Returns null if reflection fails (field renamed, different KeyPair subclass, etc.).
+     * Extract the Ed25519 private + public key bytes from a decrypted JSch KeyPair
+     * via reflection. JSch stores them in KeyPairEdDSA.prv_array and pub_array.
+     *
+     * Returns a 64-byte array (32 prv + 32 pub) that can be used to construct an
+     * OpenSSH format key without BouncyCastle derivation — important because
+     * prv_array may be the clamped scalar rather than the original seed.
+     *
+     * Returns null if reflection fails.
      */
-    private fun extractEd25519Seed(kpair: KeyPair): ByteArray? {
+    private fun extractEd25519KeyMaterial(kpair: KeyPair): ByteArray? {
         return try {
+            var prv: ByteArray? = null
+            var pub: ByteArray? = null
             var cls: Class<*>? = kpair.javaClass
             while (cls != null) {
-                try {
-                    val field = cls.getDeclaredField("prv_array")
-                    field.isAccessible = true
-                    val seed = field.get(kpair) as? ByteArray
-                    if (seed != null && seed.size == 32) return seed
-                } catch (_: NoSuchFieldException) {
-                    // Try parent class
+                if (prv == null) {
+                    try {
+                        val field = cls.getDeclaredField("prv_array")
+                        field.isAccessible = true
+                        prv = field.get(kpair) as? ByteArray
+                    } catch (_: NoSuchFieldException) {}
+                }
+                if (pub == null) {
+                    try {
+                        val field = cls.getDeclaredField("pub_array")
+                        field.isAccessible = true
+                        pub = field.get(kpair) as? ByteArray
+                    } catch (_: NoSuchFieldException) {}
                 }
                 cls = cls.superclass
             }
-            null
+            if (prv != null && prv.size == 32 && pub != null && pub.size == 32) {
+                prv + pub  // 64 bytes: private key material + public key
+            } else {
+                null
+            }
         } catch (_: Exception) {
             null
         }

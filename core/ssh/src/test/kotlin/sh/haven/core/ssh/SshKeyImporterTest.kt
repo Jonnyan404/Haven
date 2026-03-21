@@ -239,12 +239,12 @@ class SshKeyImporterTest {
     }
 
     @Test
-    fun `import encrypted Ed25519 key extracts 32-byte seed`() {
+    fun `import encrypted Ed25519 key extracts 64-byte key material`() {
         val result = SshKeyImporter.import(encryptedEd25519Pem, "test-ed25519-pass")
-        // The extracted seed should be exactly 32 bytes (raw Ed25519 private key)
+        // 64 bytes = prv_array (32) + pub_array (32) from JSch reflection
         assertEquals(
-            "Expected 32-byte Ed25519 seed",
-            32, result.privateKeyBytes.size
+            "Expected 64-byte Ed25519 key material (prv + pub)",
+            64, result.privateKeyBytes.size
         )
     }
 

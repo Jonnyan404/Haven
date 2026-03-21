@@ -3,6 +3,7 @@ package sh.haven.core.ssh
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.KeyPair
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -12,7 +13,6 @@ import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.SecureRandom
-import java.security.spec.PKCS8EncodedKeySpec
 
 class SshKeyExporterTest {
 
@@ -171,5 +171,88 @@ class SshKeyExporterTest {
             "Fingerprint should be stable across export/import cycles",
             imported1.fingerprintSha256, imported2.fingerprintSha256
         )
+    }
+
+    // ---- Full auth sequence: encrypted Ed25519 import → seed → toPem → JSch ----
+
+    // Throwaway Ed25519 key encrypted with passphrase "test-ed25519-pass" for use as a test fixture only.
+    // Same key as in SshKeyImporterTest.
+    private val encryptedEd25519Pem = """
+        -----BEGIN OPENSSH PRIVATE KEY-----
+        b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABCS3fhvqX
+        dOf0JZQYdTkkENAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIOnBvgn2SbqahNXp
+        f4MYj7/fV1X5c3ZkeuRALlPF5DbbAAAAkFKTXlDYAaLvgux4vT8ZQA363ibu21QxUKVZEU
+        O6p/yhMpBUTSE/bZhDBhzjKW1KacHT3j4uS4CFgS52HtJKHAo3gnFBHDMWmUPNN0QagmT1
+        2Ohjr/FduMCU9VhS77D1jk3cxW14ryUDgKbtzM5QJ04D46zYGvgbxSgP2IV9JwAAVFshzM
+        A2XAvQgB2Qe2XfKg==
+        -----END OPENSSH PRIVATE KEY-----
+    """.trimIndent().toByteArray()
+
+    @Test
+    fun `encrypted Ed25519 import then toPem produces JSch-loadable key`() {
+        // Step 1: Import encrypted key (simulates user importing their key file)
+        val imported = SshKeyImporter.import(encryptedEd25519Pem, "test-ed25519-pass")
+        assertEquals("ssh-ed25519", imported.keyType)
+        // 64 bytes = prv_array (32) + pub_array (32) from JSch reflection
+        assertEquals("Expected 64-byte key material from import", 64, imported.privateKeyBytes.size)
+
+        // Step 2: Convert stored bytes to PEM for JSch (simulates auth-time conversion)
+        // This is the exact path used by ConnectionsViewModel.rawKeyToPem()
+        val authPem = SshKeyExporter.toPem(imported.privateKeyBytes, imported.keyType)
+        val pemStr = authPem.decodeToString()
+        assertTrue(
+            "Expected OpenSSH PEM format, got: ${pemStr.take(40)}",
+            pemStr.startsWith("-----BEGIN OPENSSH PRIVATE KEY-----"),
+        )
+
+        // Step 3: Verify JSch can load the key (simulates jsch.addIdentity at connect time)
+        val jsch = JSch()
+        val kpair = KeyPair.load(jsch, authPem, null)
+        assertNotNull("JSch must be able to parse the auth-time PEM", kpair)
+        assertEquals("Key type must be ED25519", KeyPair.ED25519, kpair.keyType)
+        assertFalse("Key must not be encrypted", kpair.isEncrypted)
+        kpair.dispose()
+    }
+
+    @Test
+    fun `encrypted Ed25519 full sequence preserves fingerprint`() {
+        // Import → store 64-byte key material → toPem → reimport should produce same fingerprint
+        val imported = SshKeyImporter.import(encryptedEd25519Pem, "test-ed25519-pass")
+        val authPem = SshKeyExporter.toPem(imported.privateKeyBytes, imported.keyType)
+        val reimported = SshKeyImporter.import(authPem)
+        assertEquals(
+            "Fingerprint must be stable through import → toPem → reimport",
+            imported.fingerprintSha256, reimported.fingerprintSha256,
+        )
+    }
+
+    @Test
+    fun `unencrypted Ed25519 PEM passes through toPem unchanged and loads in JSch`() {
+        // Unencrypted keys are stored as original file bytes (starts with '-')
+        val unencryptedEd25519Pem = """
+            -----BEGIN OPENSSH PRIVATE KEY-----
+            b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+            QyNTUxOQAAACAGDEAEY/2eTWPYbI21/d13lEIrFjHWa11tKBnYa6M6xgAAAJihYZxQoWGc
+            UAAAAAtzc2gtZWQyNTUxOQAAACAGDEAEY/2eTWPYbI21/d13lEIrFjHWa11tKBnYa6M6xg
+            AAAEASnxhlh0i/Gz1H26nWiojhTd888E1YQC1hgnYMnaZuuAYMQARj/Z5NY9hsjbX93XeU
+            QisWMdZrXW0oGdhrozrGAAAAEGhhdmVuLXRlc3QtcGxhaW4BAgMEBQ==
+            -----END OPENSSH PRIVATE KEY-----
+        """.trimIndent().toByteArray()
+
+        val imported = SshKeyImporter.import(unencryptedEd25519Pem)
+        val authPem = SshKeyExporter.toPem(imported.privateKeyBytes, imported.keyType)
+
+        // Should be passthrough (original PEM bytes)
+        assertTrue(
+            "Unencrypted PEM should pass through unchanged",
+            unencryptedEd25519Pem.contentEquals(authPem),
+        )
+
+        // JSch must load it
+        val jsch = JSch()
+        val kpair = KeyPair.load(jsch, authPem, null)
+        assertNotNull("JSch must parse unencrypted Ed25519 PEM", kpair)
+        assertEquals(KeyPair.ED25519, kpair.keyType)
+        kpair.dispose()
     }
 }

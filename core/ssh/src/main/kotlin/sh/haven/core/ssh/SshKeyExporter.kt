@@ -20,7 +20,14 @@ object SshKeyExporter {
             return privateKeyBytes
         }
 
-        // Ed25519 raw 32-byte seed → OpenSSH private key format
+        // Ed25519 key material → OpenSSH private key format
+        // 64 bytes = prv_array (32) + pub_array (32) from JSch reflection
+        // 32 bytes = raw seed (generated keys) — derive pub via BouncyCastle
+        if (keyType == "ssh-ed25519" && privateKeyBytes.size == 64) {
+            val prv = privateKeyBytes.copyOfRange(0, 32)
+            val pub = privateKeyBytes.copyOfRange(32, 64)
+            return encodeOpenSshEd25519(prv, pub)
+        }
         if (keyType == "ssh-ed25519" && privateKeyBytes.size == 32) {
             return encodeOpenSshEd25519(privateKeyBytes)
         }
@@ -57,14 +64,26 @@ object SshKeyExporter {
     }
 
     /**
+     * Encode Ed25519 key into OpenSSH private key format using an explicit public key.
+     * Used when the public key is extracted from JSch (prv_array may be a clamped
+     * scalar rather than the original seed, so BouncyCastle derivation would be wrong).
+     */
+    private fun encodeOpenSshEd25519(prvBytes: ByteArray, pubKey: ByteArray): ByteArray {
+        return buildOpenSshEd25519(prvBytes, pubKey)
+    }
+
+    /**
      * Encode a raw Ed25519 32-byte private seed into OpenSSH private key format.
-     * This produces the same format as `ssh-keygen -t ed25519`.
+     * Derives the public key via BouncyCastle. Only correct when prvBytes is the
+     * original seed (e.g. from key generation), not a clamped scalar.
      */
     private fun encodeOpenSshEd25519(seed: ByteArray): ByteArray {
-        // Derive public key from seed using BouncyCastle
         val privParams = org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters(seed, 0)
-        val pubKey = privParams.generatePublicKey().encoded  // 32 bytes
+        val pubKey = privParams.generatePublicKey().encoded
+        return buildOpenSshEd25519(seed, pubKey)
+    }
 
+    private fun buildOpenSshEd25519(prvBytes: ByteArray, pubKey: ByteArray): ByteArray {
         val out = ByteArrayOutputStream()
 
         // OpenSSH private key format (see PROTOCOL.key in OpenSSH source)
@@ -88,8 +107,8 @@ object SshKeyExporter {
         writeInt(privSection, checkInt)
         writeString(privSection, "ssh-ed25519")
         writeBytes(privSection, pubKey)
-        // Ed25519 "private key" in OpenSSH = seed || pubkey (64 bytes)
-        writeBytes(privSection, seed + pubKey)
+        // Ed25519 "private key" in OpenSSH = prv || pubkey (64 bytes)
+        writeBytes(privSection, prvBytes + pubKey)
         writeString(privSection, "") // comment
         // Padding to block size (8 bytes for "none" cipher)
         var padByte = 1

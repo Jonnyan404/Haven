@@ -33,6 +33,7 @@ import sh.haven.core.ssh.HostKeyVerifier
 import sh.haven.core.ssh.KnownHostEntry
 import sh.haven.core.ssh.SshClient
 import sh.haven.core.ssh.SshConnectionService
+import sh.haven.core.ssh.SshKeyExporter
 import sh.haven.core.ssh.SessionManager
 import sh.haven.core.ssh.SshSessionManager
 import sh.haven.core.data.db.entities.KnownHost
@@ -44,7 +45,6 @@ import sh.haven.core.reticulum.ReticulumSessionManager
 import sh.haven.core.smb.SmbSessionManager
 import android.util.Log
 import java.io.File
-import java.util.Base64
 import javax.inject.Inject
 
 private const val TAG = "ConnectionsVM"
@@ -1445,37 +1445,13 @@ class ConnectionsViewModel @Inject constructor(
 
     /**
      * Convert raw private key bytes to PEM format that JSch can parse.
-     * Ed25519 keys are raw 32-byte seeds that need a PKCS#8 DER envelope.
-     * RSA/ECDSA keys from JCA are already PKCS#8 DER encoded.
+     * Delegates to SshKeyExporter which handles all formats correctly:
+     * - PEM/OpenSSH: pass through
+     * - Ed25519 32-byte seed: OpenSSH format (JSch can't parse PKCS#8 for Ed25519)
+     * - PKCS#8 DER (RSA/ECDSA): wrapped in PEM
      */
     private fun rawKeyToPem(rawBytes: ByteArray, keyType: String): ByteArray {
-        // Imported keys are stored as PEM or OpenSSH format — pass through to JSch
-        if (rawBytes.size > 5 && rawBytes[0] == '-'.code.toByte()) {
-            return rawBytes
-        }
-
-        // Generated keys: raw bytes → PKCS#8 PEM
-        val pkcs8Der = if (keyType.contains("Ed25519", ignoreCase = true)) {
-            // PKCS#8 DER prefix for Ed25519: SEQUENCE { INTEGER 0, SEQUENCE { OID 1.3.101.112 }, OCTET STRING { OCTET STRING { <32 bytes> } } }
-            val prefix = byteArrayOf(
-                0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06,
-                0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
-            )
-            prefix + rawBytes
-        } else {
-            // RSA/ECDSA: keyPair.private.encoded already returns PKCS#8 DER
-            rawBytes
-        }
-        val b64 = Base64.getEncoder().encodeToString(pkcs8Der)
-        val pem = buildString {
-            append("-----BEGIN PRIVATE KEY-----\n")
-            for (i in b64.indices step 64) {
-                append(b64, i, minOf(i + 64, b64.length))
-                append('\n')
-            }
-            append("-----END PRIVATE KEY-----\n")
-        }
-        return pem.toByteArray()
+        return SshKeyExporter.toPem(rawBytes, keyType)
     }
 
     /**
