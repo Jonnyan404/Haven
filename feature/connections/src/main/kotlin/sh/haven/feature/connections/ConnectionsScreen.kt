@@ -45,6 +45,9 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -63,6 +66,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -497,8 +501,8 @@ fun ConnectionsScreen(
     setupDesktopProfile?.let { profile ->
         DesktopSetupDialog(
             desktopState = desktopSetupState,
-            onStart = { password ->
-                viewModel.setupDesktop(profile, password)
+            onStart = { password, de ->
+                viewModel.setupDesktop(profile, password, de)
             },
             onDismiss = {
                 setupDesktopProfile = null
@@ -1131,10 +1135,12 @@ private fun LinuxVmCard(
 @Composable
 private fun DesktopSetupDialog(
     desktopState: sh.haven.core.local.ProotManager.DesktopSetupState,
-    onStart: (password: String) -> Unit,
+    onStart: (password: String, de: sh.haven.core.local.ProotManager.DesktopEnvironment) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var password by rememberSaveable { mutableStateOf("haven") }
+    val deOptions = sh.haven.core.local.ProotManager.DesktopEnvironment.entries
+    var selectedDe by rememberSaveable { mutableIntStateOf(0) }
     val isInstalling = desktopState is sh.haven.core.local.ProotManager.DesktopSetupState.Installing
 
     AlertDialog(
@@ -1145,10 +1151,20 @@ private fun DesktopSetupDialog(
                 when (desktopState) {
                     is sh.haven.core.local.ProotManager.DesktopSetupState.Idle -> {
                         Text(
-                            "Install Xfce4 desktop and VNC server in the PRoot environment. " +
-                                "This downloads ~100MB of packages.",
+                            "Install a desktop environment and VNC server in the PRoot environment.",
                             style = MaterialTheme.typography.bodySmall,
                         )
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            deOptions.forEachIndexed { index, de ->
+                                SegmentedButton(
+                                    selected = selectedDe == index,
+                                    onClick = { selectedDe = index },
+                                    shape = SegmentedButtonDefaults.itemShape(index, deOptions.size),
+                                ) {
+                                    Text("${de.label} (${de.sizeEstimate})")
+                                }
+                            }
+                        }
                         OutlinedTextField(
                             value = password,
                             onValueChange = { password = it },
@@ -1185,7 +1201,7 @@ private fun DesktopSetupDialog(
         confirmButton = {
             if (desktopState is sh.haven.core.local.ProotManager.DesktopSetupState.Idle) {
                 TextButton(
-                    onClick = { onStart(password) },
+                    onClick = { onStart(password, deOptions[selectedDe]) },
                 ) { Text("Install") }
             }
         },

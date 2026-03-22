@@ -292,7 +292,7 @@ private fun VncViewer(
                 .onSizeChanged { viewSize = it }
                 // All touch handling: tap, drag, pinch-to-zoom, two-finger pan/scroll.
                 // Uses Initial pass and consumes all events so the pager can't steal them.
-                .pointerInput(frame.width, frame.height, viewSize, zoom, panX, panY) {
+                .pointerInput(frame.width, frame.height, viewSize) {
                     val touchSlopPx = viewConfiguration.touchSlop
                     awaitEachGesture {
                         val firstDown = awaitFirstDown(

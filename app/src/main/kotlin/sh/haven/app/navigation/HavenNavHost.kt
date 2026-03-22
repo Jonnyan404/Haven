@@ -82,6 +82,8 @@ fun HavenNavHost(
 
     // Desktop fullscreen hides bottom nav and system bars
     var desktopFullscreen by remember { mutableStateOf(false) }
+    // Disable pager swipe when VNC/RDP is connected (pinch-to-zoom conflicts)
+    var desktopConnected by remember { mutableStateOf(false) }
 
     Scaffold(
         contentWindowInsets = ScaffoldDefaults.contentWindowInsets.exclude(WindowInsets.ime),
@@ -106,7 +108,7 @@ fun HavenNavHost(
     ) { innerPadding ->
         HorizontalPager(
             state = pagerState,
-            userScrollEnabled = !desktopFullscreen,
+            userScrollEnabled = !desktopFullscreen && !desktopConnected,
             modifier = Modifier
                 .padding(innerPadding)
                 .consumeWindowInsets(innerPadding)
@@ -227,6 +229,7 @@ fun HavenNavHost(
                         toolbarLayout = toolbarLayout,
                         onPendingConsumed = consumePending,
                         onFullscreenChanged = { desktopFullscreen = it },
+                        onConnectedChanged = { desktopConnected = it },
                     )
                 }
                 Screen.Sftp -> {

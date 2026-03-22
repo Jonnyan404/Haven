@@ -62,8 +62,40 @@ class ProotManager @Inject constructor(
         get() = prootBinary != null && isRootfsInstalled
 
     val isDesktopInstalled: Boolean
-        get() = File(rootfsDir, "usr/bin/Xvnc").exists() &&
-            File(rootfsDir, "usr/bin/startxfce4").exists()
+        get() = File(rootfsDir, "usr/bin/Xvnc").exists() && installedDesktop != null
+
+    enum class DesktopEnvironment(
+        val label: String,
+        val packages: String,
+        val verifyBinary: String,
+        val startCommands: String,
+        val sizeEstimate: String,
+    ) {
+        XFCE4(
+            label = "Xfce4",
+            packages = "tigervnc xfce4 xfce4-terminal dbus-x11 font-noto",
+            verifyBinary = "usr/bin/startxfce4",
+            startCommands = "xfwm4 & xfce4-panel & xfdesktop &",
+            sizeEstimate = "~100MB",
+        ),
+        OPENBOX(
+            label = "Openbox",
+            packages = "tigervnc openbox xterm xsetroot font-noto",
+            verifyBinary = "usr/bin/openbox",
+            startCommands = "xsetroot -solid '#2e3440'; openbox & xterm &",
+            sizeEstimate = "~10MB",
+        ),
+    }
+
+    /** Which DE was last installed (persisted as a file in the rootfs). */
+    val installedDesktop: DesktopEnvironment?
+        get() {
+            val marker = File(rootfsDir, "root/.haven-desktop")
+            if (!marker.exists()) return null
+            return try {
+                DesktopEnvironment.valueOf(marker.readText().trim())
+            } catch (_: Exception) { null }
+        }
 
     sealed class DesktopSetupState {
         data object Idle : DesktopSetupState()
@@ -343,7 +375,7 @@ class ProotManager @Inject constructor(
     /**
      * Install X11 + VNC + Xfce4 desktop inside the PRoot rootfs.
      */
-    suspend fun setupDesktop(vncPassword: String) {
+    suspend fun setupDesktop(vncPassword: String, de: DesktopEnvironment = DesktopEnvironment.XFCE4) {
         try {
             // Ensure rootfs is installed first
             if (!isRootfsInstalled) {
@@ -354,25 +386,33 @@ class ProotManager @Inject constructor(
                 }
             }
 
-            if (!isDesktopInstalled) {
-                _desktopState.value = DesktopSetupState.Installing("Installing packages (~100MB download)...")
+            // Reinstall if switching DE or not yet installed
+            val needsInstall = installedDesktop != de
+            if (needsInstall) {
+                _desktopState.value = DesktopSetupState.Installing(
+                    "Installing ${de.label} (${de.sizeEstimate} download)..."
+                )
 
             val (installOutput, installExit) = runCommandInProot(
-                "apk update && apk add tigervnc xfce4 xfce4-terminal dbus-x11 font-noto"
+                "apk update && apk add ${de.packages}"
             )
             Log.d(TAG, "apk install exit=$installExit output(last 300)=${installOutput.takeLast(300)}")
 
             // Check if key binaries were installed — apk may return exit 1 for
             // non-fatal trigger errors (gtk icon cache, fontscale, etc.)
             val checkInstalled = File(rootfsDir, "usr/bin/Xvnc").exists() &&
-                File(rootfsDir, "usr/bin/startxfce4").exists()
+                File(rootfsDir, de.verifyBinary).exists()
             if (!checkInstalled) {
                 _desktopState.value = DesktopSetupState.Error(
                     "Package install failed: ${installOutput.takeLast(300)}"
                 )
                 return
             }
-            Log.d(TAG, "Desktop packages installed")
+
+            // Write marker so we know which DE is installed
+            File(rootfsDir, "root").mkdirs()
+            File(rootfsDir, "root/.haven-desktop").writeText(de.name)
+            Log.d(TAG, "${de.label} packages installed")
             }
 
             _desktopState.value = DesktopSetupState.Installing("Configuring VNC...")
@@ -459,9 +499,7 @@ chmod +x /root/.vnc/xstartup""")
                 "sleep 3; " +
                 "export DISPLAY=:1; " +
                 "export HOME=/root; " +
-                "xfwm4 & " +
-                "xfce4-panel & " +
-                "xfdesktop & " +
+                "${installedDesktop?.startCommands ?: DesktopEnvironment.XFCE4.startCommands} " +
                 "wait",
         ).apply {
             environment().apply {

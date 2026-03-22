@@ -44,6 +44,7 @@ fun DesktopScreen(
     toolbarLayout: ToolbarLayout = ToolbarLayout.DEFAULT,
     onPendingConsumed: () -> Unit = {},
     onFullscreenChanged: (Boolean) -> Unit = {},
+    onConnectedChanged: (Boolean) -> Unit = {},
 ) {
     // 0 = VNC, 1 = RDP — persisted across recompositions
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
@@ -62,6 +63,8 @@ fun DesktopScreen(
     val vncConnected by vncViewModel.connected.collectAsState()
     val rdpConnected by rdpViewModel.connected.collectAsState()
     val anyConnected = vncConnected || rdpConnected
+
+    LaunchedEffect(anyConnected) { onConnectedChanged(anyConnected) }
 
     // If one is connected, force that tab
     if (vncConnected) selectedTab = 0

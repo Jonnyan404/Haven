@@ -579,10 +579,14 @@ class ConnectionsViewModel @Inject constructor(
     val desktopSetupState: StateFlow<sh.haven.core.local.ProotManager.DesktopSetupState> =
         localSessionManager.prootManager.desktopState
 
-    fun setupDesktop(localProfile: ConnectionProfile, vncPassword: String) {
+    fun setupDesktop(
+        localProfile: ConnectionProfile,
+        vncPassword: String,
+        de: sh.haven.core.local.ProotManager.DesktopEnvironment = sh.haven.core.local.ProotManager.DesktopEnvironment.XFCE4,
+    ) {
         viewModelScope.launch {
             val prootManager = localSessionManager.prootManager
-            prootManager.setupDesktop(vncPassword)
+            prootManager.setupDesktop(vncPassword, de)
 
             val state = prootManager.desktopState.value
             Log.d(TAG, "Desktop setup result: $state")
