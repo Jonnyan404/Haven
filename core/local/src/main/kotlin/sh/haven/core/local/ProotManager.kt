@@ -61,6 +61,20 @@ class ProotManager @Inject constructor(
     val isReady: Boolean
         get() = prootBinary != null && isRootfsInstalled
 
+    val isDesktopInstalled: Boolean
+        get() = File(rootfsDir, "usr/bin/Xvnc").exists() &&
+            File(rootfsDir, "usr/bin/startxfce4").exists()
+
+    sealed class DesktopSetupState {
+        data object Idle : DesktopSetupState()
+        data class Installing(val step: String) : DesktopSetupState()
+        data object Complete : DesktopSetupState()
+        data class Error(val message: String) : DesktopSetupState()
+    }
+
+    private val _desktopState = MutableStateFlow<DesktopSetupState>(DesktopSetupState.Idle)
+    val desktopState: StateFlow<DesktopSetupState> = _desktopState.asStateFlow()
+
     init {
         _state.value = if (isReady) SetupState.Ready else SetupState.NotInstalled
     }
@@ -296,6 +310,79 @@ class ProotManager @Inject constructor(
             val skip = ByteArray(remainder.toInt())
             readFully(input, skip)
         }
+    }
+
+    /**
+     * Run a command inside the PRoot rootfs (non-interactive).
+     * Returns (stdout+stderr, exitCode).
+     */
+    suspend fun runCommandInProot(command: String): Pair<String, Int> = withContext(Dispatchers.IO) {
+        val prootBin = prootBinary ?: throw IllegalStateException("PRoot not available")
+        val loaderPath = File(context.applicationInfo.nativeLibraryDir, "libproot_loader.so").absolutePath
+        val process = ProcessBuilder(
+            prootBin, "-0", "-r", rootfsDir.absolutePath,
+            "-b", "/dev", "-b", "/proc", "-b", "/sys",
+            "-w", "/root",
+            "/bin/busybox", "sh", "-c", command,
+        ).apply {
+            environment().apply {
+                put("HOME", "/root")
+                put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+                put("PROOT_TMP_DIR", context.cacheDir.absolutePath)
+                put("PROOT_LOADER", loaderPath)
+            }
+            redirectErrorStream(true)
+        }.start()
+        val output = process.inputStream.bufferedReader().readText()
+        val exitCode = process.waitFor()
+        Pair(output, exitCode)
+    }
+
+    /**
+     * Install X11 + VNC + Xfce4 desktop inside the PRoot rootfs.
+     */
+    suspend fun setupDesktop(vncPassword: String) {
+        try {
+            _desktopState.value = DesktopSetupState.Installing("Installing packages (~100MB download)...")
+
+            val (installOutput, installExit) = runCommandInProot(
+                "apk update && apk add tigervnc xfce4 xfce4-terminal dbus-x11 font-noto"
+            )
+            if (installExit != 0) {
+                _desktopState.value = DesktopSetupState.Error(
+                    "Package install failed (exit $installExit): ${installOutput.takeLast(200)}"
+                )
+                return
+            }
+            Log.d(TAG, "Desktop packages installed")
+
+            _desktopState.value = DesktopSetupState.Installing("Configuring VNC...")
+
+            // Write VNC password
+            runCommandInProot("mkdir -p /root/.vnc")
+            runCommandInProot(
+                "echo '$vncPassword' | vncpasswd -f > /root/.vnc/passwd && chmod 600 /root/.vnc/passwd"
+            )
+
+            // Write xstartup
+            runCommandInProot("""cat > /root/.vnc/xstartup << 'XEOF'
+#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+exec startxfce4
+XEOF
+chmod +x /root/.vnc/xstartup""")
+
+            Log.d(TAG, "Desktop setup complete")
+            _desktopState.value = DesktopSetupState.Complete
+        } catch (e: Exception) {
+            Log.e(TAG, "Desktop setup failed", e)
+            _desktopState.value = DesktopSetupState.Error(e.message ?: "Setup failed")
+        }
+    }
+
+    fun resetDesktopState() {
+        _desktopState.value = DesktopSetupState.Idle
     }
 
     /**

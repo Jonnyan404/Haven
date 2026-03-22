@@ -138,7 +138,7 @@ fun ConnectionsScreen(
     val smbSubnetScanning by viewModel.smbSubnetScanning.collectAsState()
     val showMoshSetupGuide by viewModel.showMoshSetupGuide.collectAsState()
     val showMoshClientMissing by viewModel.showMoshClientMissing.collectAsState()
-
+    val desktopSetupState by viewModel.desktopSetupState.collectAsState()
 
     LaunchedEffect(navigateToTerminal) {
         navigateToTerminal?.let { profileId ->
@@ -182,6 +182,7 @@ fun ConnectionsScreen(
     var connectingProfile by remember { mutableStateOf<ConnectionProfile?>(null) }
     var deployingProfile by remember { mutableStateOf<ConnectionProfile?>(null) }
     var portForwardProfile by remember { mutableStateOf<ConnectionProfile?>(null) }
+    var setupDesktopProfile by remember { mutableStateOf<ConnectionProfile?>(null) }
     var quickConnectText by rememberSaveable { mutableStateOf("") }
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -493,6 +494,19 @@ fun ConnectionsScreen(
         )
     }
 
+    setupDesktopProfile?.let { profile ->
+        DesktopSetupDialog(
+            desktopState = desktopSetupState,
+            onStart = { password ->
+                viewModel.setupDesktop(profile, password)
+            },
+            onDismiss = {
+                setupDesktopProfile = null
+                viewModel.resetDesktopSetupState()
+            },
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("Connections") })
@@ -593,6 +607,7 @@ fun ConnectionsScreen(
                                 onConnectWithPassword = { connectingProfile = profile },
                                 onPortForwards = { portForwardProfile = profile },
                                 onNewSession = { viewModel.openNewSession(profile.id) },
+                                onSetupDesktop = { setupDesktopProfile = profile },
                             )
                         }
                         val deps = dependentsByParent[profile.id].orEmpty()
@@ -617,6 +632,7 @@ fun ConnectionsScreen(
                                     onConnectWithPassword = { connectingProfile = dep },
                                     onPortForwards = { portForwardProfile = dep },
                                     onNewSession = { viewModel.openNewSession(dep.id) },
+                                    onSetupDesktop = { setupDesktopProfile = dep },
                                 )
                             }
                         }
@@ -711,6 +727,7 @@ private fun ConnectionTreeItem(
     onConnectWithPassword: () -> Unit,
     onPortForwards: () -> Unit,
     onNewSession: () -> Unit,
+    onSetupDesktop: () -> Unit = {},
 ) {
     val profileStatus = profileStatuses[profile.id]
     var showMenu by remember { mutableStateOf(false) }
@@ -849,6 +866,13 @@ private fun ConnectionTreeItem(
                     text = { Text("Deploy SSH Key") },
                     leadingIcon = { Icon(Icons.Filled.VpnKey, null) },
                     onClick = { showMenu = false; onDeployKey() },
+                )
+            }
+            if (profile.isLocal) {
+                DropdownMenuItem(
+                    text = { Text("Setup Desktop") },
+                    leadingIcon = { Icon(Icons.Filled.Laptop, null) },
+                    onClick = { showMenu = false; onSetupDesktop() },
                 )
             }
             DropdownMenuItem(
@@ -1084,4 +1108,74 @@ private fun LinuxVmCard(
             }
         }
     }
+}
+
+@Composable
+private fun DesktopSetupDialog(
+    desktopState: sh.haven.core.local.ProotManager.DesktopSetupState,
+    onStart: (password: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var password by rememberSaveable { mutableStateOf("haven") }
+    val isInstalling = desktopState is sh.haven.core.local.ProotManager.DesktopSetupState.Installing
+
+    AlertDialog(
+        onDismissRequest = { if (!isInstalling) onDismiss() },
+        title = { Text("Setup Desktop") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                when (desktopState) {
+                    is sh.haven.core.local.ProotManager.DesktopSetupState.Idle -> {
+                        Text(
+                            "Install Xfce4 desktop and VNC server in the PRoot environment. " +
+                                "This downloads ~100MB of packages.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { password = it },
+                            label = { Text("VNC Password") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    is sh.haven.core.local.ProotManager.DesktopSetupState.Installing -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                            Text(
+                                desktopState.step,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                    is sh.haven.core.local.ProotManager.DesktopSetupState.Complete -> {
+                        Text("Desktop installed. Connecting to VNC...")
+                    }
+                    is sh.haven.core.local.ProotManager.DesktopSetupState.Error -> {
+                        Text(
+                            "Setup failed: ${desktopState.message}",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (desktopState is sh.haven.core.local.ProotManager.DesktopSetupState.Idle) {
+                TextButton(
+                    onClick = { onStart(password) },
+                    enabled = password.length >= 6,
+                ) { Text("Install") }
+            }
+        },
+        dismissButton = {
+            if (!isInstalling) {
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
+    )
 }

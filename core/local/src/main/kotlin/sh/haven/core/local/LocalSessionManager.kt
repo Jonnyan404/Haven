@@ -228,6 +228,19 @@ class LocalSessionManager @Inject constructor(
         }
     }
 
+    /**
+     * Send a VNC start command to an active PRoot session's PTY.
+     */
+    fun startVncInSession(profileId: String) {
+        val session = _sessions.value.values
+            .find { it.profileId == profileId && it.status == SessionState.Status.CONNECTED }
+            ?: return
+        session.localSession?.sendInput(
+            "vncserver :1 -geometry 1280x720 -localhost no 2>&1 &\n".toByteArray()
+        )
+        Log.d(TAG, "Sent VNC start command to session ${session.sessionId}")
+    }
+
     fun getSessionsForProfile(profileId: String): List<SessionState> =
         _sessions.value.values.filter { it.profileId == profileId }
 }

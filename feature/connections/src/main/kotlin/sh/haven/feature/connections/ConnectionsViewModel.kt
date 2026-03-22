@@ -573,6 +573,48 @@ class ConnectionsViewModel @Inject constructor(
         }
     }
 
+    val desktopSetupState: StateFlow<sh.haven.core.local.ProotManager.DesktopSetupState> =
+        localSessionManager.prootManager.desktopState
+
+    fun setupDesktop(localProfile: ConnectionProfile, vncPassword: String) {
+        viewModelScope.launch {
+            val prootManager = localSessionManager.prootManager
+            prootManager.setupDesktop(vncPassword)
+
+            if (prootManager.desktopState.value is sh.haven.core.local.ProotManager.DesktopSetupState.Complete) {
+                // Start VNC in the active PRoot session
+                localSessionManager.startVncInSession(localProfile.id)
+
+                // Create VNC connection profile
+                val existing = connections.value.find {
+                    it.isVnc && it.host == "localhost" && it.vncPort == 5901
+                }
+                if (existing == null) {
+                    val vncProfile = ConnectionProfile(
+                        label = "${localProfile.label} Desktop",
+                        host = "localhost",
+                        port = 5901,
+                        username = "",
+                        connectionType = "VNC",
+                        vncPort = 5901,
+                        vncPassword = vncPassword,
+                        vncSshForward = false,
+                    )
+                    repository.save(vncProfile)
+                }
+
+                // Small delay for VNC server to start
+                delay(1500)
+                _navigateToVnc.value = VncNavigation("localhost", 5901, vncPassword)
+                prootManager.resetDesktopState()
+            }
+        }
+    }
+
+    fun resetDesktopSetupState() {
+        localSessionManager.prootManager.resetDesktopState()
+    }
+
     private fun connectLocal(profile: ConnectionProfile) {
         viewModelScope.launch {
             _connectingProfileId.value = profile.id
