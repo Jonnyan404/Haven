@@ -270,6 +270,43 @@ class TerminalViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Send the session manager's native search key sequence to the active tab.
+     * Falls back to Ctrl+R (shell reverse search) when no session manager is configured.
+     * Uses default prefix keys (Ctrl+B for tmux, Ctrl+A for screen/byobu).
+     */
+    fun sendSearchKeys() {
+        val tab = _tabs.value.getOrNull(_activeTabIndex.value) ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val profile = connectionRepository.getById(tab.profileId)
+            val smOverride = profile?.sessionManager
+            val smName = if (smOverride != null) {
+                smOverride.uppercase()
+            } else {
+                preferencesRepository.sessionManager.first().name
+            }
+
+            when (smName) {
+                "TMUX" -> {
+                    tab.sendInput(byteArrayOf(0x02)) // Ctrl+B (tmux prefix)
+                    kotlinx.coroutines.delay(50)
+                    tab.sendInput("[/".toByteArray()) // copy-mode + forward search
+                }
+                "ZELLIJ" -> {
+                    tab.sendInput(byteArrayOf(0x13)) // Ctrl+S (search mode)
+                }
+                "SCREEN", "BYOBU" -> {
+                    tab.sendInput(byteArrayOf(0x01)) // Ctrl+A (screen/byobu prefix)
+                    kotlinx.coroutines.delay(50)
+                    tab.sendInput("[/".toByteArray()) // copy-mode + forward search
+                }
+                else -> {
+                    tab.sendInput(byteArrayOf(0x12)) // Ctrl+R (shell reverse search)
+                }
+            }
+        }
+    }
+
     /** Save VNC settings for a profile. */
     fun saveVncSettings(profileId: String, port: Int, password: String?, sshForward: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {

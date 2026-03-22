@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -218,9 +219,13 @@ fun TerminalScreen(
             val clampedIndex = activeTabIndex.coerceIn(0, tabs.size - 1)
             val indicatorColor = profileColors[tabs.getOrNull(clampedIndex)?.profileId]
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
             PrimaryScrollableTabRow(
                 selectedTabIndex = clampedIndex,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.weight(1f),
                 edgePadding = 8.dp,
                 indicator = {
                     TabRowDefaults.SecondaryIndicator(
@@ -283,7 +288,18 @@ fun TerminalScreen(
                         },
                     )
                 }
-            }
+            } // PrimaryScrollableTabRow
+                IconButton(
+                    onClick = { viewModel.sendSearchKeys() },
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Search,
+                        contentDescription = "Search",
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            } // Row
 
             // Terminal area
             val activeTab = tabs.getOrNull(activeTabIndex)

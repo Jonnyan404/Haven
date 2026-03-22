@@ -22,7 +22,17 @@ class SshKeyExporterTest {
         val gen = Ed25519KeyPairGenerator()
         gen.init(Ed25519KeyGenerationParameters(SecureRandom()))
         val kp = gen.generateKeyPair()
-        return (kp.private as Ed25519PrivateKeyParameters).encoded // 32-byte seed
+        val priv = kp.private as Ed25519PrivateKeyParameters
+        // Use getEncoded() for 32-byte raw seed. On some BC/JDK combinations,
+        // .encoded may return ASN.1-wrapped form; fall back to extracting it.
+        val encoded = priv.encoded
+        return if (encoded.size == 32) encoded
+        else {
+            // ASN.1 wrapped — regenerate from the private key parameters directly
+            val seed = ByteArray(32)
+            priv.encode(seed, 0)
+            seed
+        }
     }
 
     @Test
