@@ -117,6 +117,11 @@ class ProotManager @Inject constructor(
                 extractTarGz(tarball, rootfsDir)
                 tarball.delete()
                 Log.d(TAG, "Rootfs extracted to ${rootfsDir.absolutePath}")
+
+                // Android doesn't have /etc/resolv.conf — write one with public DNS
+                val resolvConf = File(rootfsDir, "etc/resolv.conf")
+                resolvConf.writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
+                Log.d(TAG, "Wrote resolv.conf")
             }
 
             _state.value = SetupState.Ready
