@@ -36,6 +36,10 @@ class MouseModeTracker {
     private val _mouseMode = MutableStateFlow(false)
     val mouseMode: StateFlow<Boolean> = _mouseMode.asStateFlow()
 
+    /** The highest active mouse mode (1000/1002/1003), or null if none. */
+    private val _activeMouseMode = MutableStateFlow<Int?>(null)
+    val activeMouseMode: StateFlow<Int?> = _activeMouseMode.asStateFlow()
+
     private val _bracketPasteMode = MutableStateFlow(false)
     val bracketPasteMode: StateFlow<Boolean> = _bracketPasteMode.asStateFlow()
 
@@ -114,6 +118,7 @@ class MouseModeTracker {
             in MOUSE_MODES -> {
                 if (enable) activeModes.add(mode) else activeModes.remove(mode)
                 _mouseMode.value = activeModes.isNotEmpty()
+                _activeMouseMode.value = activeModes.maxOrNull()
             }
             BRACKET_PASTE_MODE -> {
                 _bracketPasteMode.value = enable

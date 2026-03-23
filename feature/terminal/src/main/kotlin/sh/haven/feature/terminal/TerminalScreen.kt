@@ -392,6 +392,7 @@ fun TerminalScreen(
                     }
 
                     val isMouseMode by activeTab.mouseMode.collectAsState()
+                    val currentActiveMouseMode by activeTab.activeMouseMode.collectAsState()
                     val isBracketPaste by activeTab.bracketPasteMode.collectAsState()
                     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
 
@@ -418,6 +419,7 @@ fun TerminalScreen(
                                     isSelectionActive = { selectionController?.isSelectionActive == true },
                                     selectionController = { selectionController },
                                     surfaceSize = { surfaceSize },
+                                    activeMouseMode = { currentActiveMouseMode },
                                 )
                             }
                             .then(terminalModifier),
@@ -456,6 +458,10 @@ fun TerminalScreen(
                                 focusRequester = focusRequester,
                                 modifierManager = modifierManager,
                                 onSelectionControllerAvailable = { selectionController = it },
+                                onFontSizeChanged = { newSize ->
+                                    viewModel.setFontSize(newSize.value.toInt())
+                                },
+                                mouseMode = isMouseMode,
                             )
                         }
 
@@ -738,8 +744,27 @@ private fun sgrMouseWheel(scrollUp: Boolean, col: Int, row: Int): ByteArray {
     return "\u001b[<$button;$col;${row}M".toByteArray()
 }
 
+/**
+ * SGR mouse button press/release sequence.
+ * Format: ESC [ < button ; col ; row M (press) or m (release)
+ * Button 0 = left, 2 = right. col and row are 1-based.
+ */
+private fun sgrMouseButton(button: Int, col: Int, row: Int, pressed: Boolean): ByteArray {
+    val suffix = if (pressed) 'M' else 'm'
+    return "\u001b[<$button;$col;${row}$suffix".toByteArray()
+}
+
+/** Millis to wait for long-press to trigger right-click in mouse mode. */
+private const val MOUSE_LONG_PRESS_MS = 400L
+
+/** Millis after touch-down to suppress tab-swipe, giving time for a second finger (pinch). */
+private const val MULTITOUCH_GRACE_MS = 50L
+
+/** Millis after last multi-touch event to suppress gestures from stale finger lift-off. */
+private const val MULTITOUCH_LIFTOFF_MS = 300L
+
 /** Gesture kind — once classified per touch, locked for the touch lifetime. */
-private enum class GestureKind { UNDECIDED, TAB_SWIPE, SCROLL, SELECTION }
+private enum class GestureKind { UNDECIDED, TAB_SWIPE, SCROLL, SELECTION, MOUSE_CLICK }
 
 /** Fraction of terminal height at top/bottom that triggers edge-scroll during selection drag. */
 private const val EDGE_SCROLL_ZONE = 0.12f
@@ -772,9 +797,11 @@ private suspend fun PointerInputScope.terminalGestureInterceptor(
     isSelectionActive: () -> Boolean,
     selectionController: () -> org.connectbot.terminal.SelectionController?,
     surfaceSize: () -> IntSize,
+    activeMouseMode: () -> Int?,
 ) {
     val touchSlop = viewConfiguration.touchSlop
     var lastDragEndTime = 0L
+    var lastMultiTouchTime = 0L
 
     awaitPointerEventScope {
         while (true) {
@@ -787,6 +814,7 @@ private suspend fun PointerInputScope.terminalGestureInterceptor(
             if (isSelectionActive()) continue
 
             val inCooldown = System.currentTimeMillis() - lastDragEndTime < DRAG_SELECTION_COOLDOWN_MS
+            val inPinchCooldown = System.currentTimeMillis() - lastMultiTouchTime < MULTITOUCH_LIFTOFF_MS
 
             val startX = firstChange.position.x
             val startY = firstChange.position.y
@@ -794,11 +822,23 @@ private suspend fun PointerInputScope.terminalGestureInterceptor(
             var accumulatedY = 0f
             var wasDrag = false
             var lastEdgeScrollTime = 0L
+            val touchDownTime = System.currentTimeMillis()
+            var longPressHandled = false
 
             while (true) {
                 val event = awaitPointerEvent(PointerEventPass.Initial)
                 val change = event.changes.firstOrNull() ?: break
                 if (!change.pressed) break
+
+                // Multi-touch (pinch-to-zoom) — consume all pointers so the
+                // pager doesn't interpret finger spread as a tab swipe,
+                // and prevent the tap handler from firing a mouse click on lift.
+                if (event.changes.size > 1) {
+                    kind = GestureKind.SCROLL // not UNDECIDED → no tap on lift
+                    lastMultiTouchTime = System.currentTimeMillis()
+                    event.changes.forEach { it.consume() }
+                    continue
+                }
 
                 // Selection always takes priority — the Terminal's long-press
                 // detector runs on a later PointerEventPass, so isSelectionActive()
@@ -807,6 +847,29 @@ private suspend fun PointerInputScope.terminalGestureInterceptor(
                 // firing simultaneously.
                 if (isSelectionActive() && kind != GestureKind.SELECTION) {
                     kind = GestureKind.SELECTION
+                }
+
+                // In mouse mode: detect long-press for right-click while still UNDECIDED
+                if (mouseMode && kind == GestureKind.UNDECIDED && !longPressHandled) {
+                    val elapsed = System.currentTimeMillis() - touchDownTime
+                    if (elapsed >= MOUSE_LONG_PRESS_MS) {
+                        longPressHandled = true
+                        kind = GestureKind.MOUSE_CLICK
+                        change.consume()
+
+                        // Send right-click (button 2) press + release
+                        val size = surfaceSize()
+                        if (size.width > 0 && size.height > 0) {
+                            val dims = activeTab.emulator.dimensions
+                            val col = ((startX / size.width) * dims.columns)
+                                .toInt().coerceIn(1, dims.columns)
+                            val row = ((startY / size.height) * dims.rows)
+                                .toInt().coerceIn(1, dims.rows)
+                            activeTab.sendInput(sgrMouseButton(2, col, row, pressed = true))
+                            activeTab.sendInput(sgrMouseButton(2, col, row, pressed = false))
+                        }
+                        continue
+                    }
                 }
 
                 // Classify by first significant movement
@@ -828,11 +891,26 @@ private suspend fun PointerInputScope.terminalGestureInterceptor(
 
                 when (kind) {
                     GestureKind.UNDECIDED -> {
-                        if (inCooldown) change.consume()
+                        if (mouseMode || inCooldown || inPinchCooldown) change.consume()
+                    }
+
+                    GestureKind.MOUSE_CLICK -> {
+                        // Already handled above; consume remaining events
+                        change.consume()
                     }
 
                     GestureKind.TAB_SWIPE -> {
-                        // Don't consume, don't break — events pass through to
+                        // Give multi-touch detection time before letting
+                        // the pager see horizontal movement — prevents a
+                        // two-finger pinch from being grabbed as a tab swipe
+                        // when the first finger moves before the second lands
+                        // or when a stale finger lifts after a pinch ends.
+                        val elapsed = System.currentTimeMillis() - touchDownTime
+                        val sincePinch = System.currentTimeMillis() - lastMultiTouchTime
+                        if (elapsed < MULTITOUCH_GRACE_MS || sincePinch < MULTITOUCH_LIFTOFF_MS) {
+                            change.consume()
+                        }
+                        // Otherwise don't consume — events pass through to
                         // the pager naturally.  Staying in the loop lets us
                         // detect late selection activation and override.
                     }
@@ -890,6 +968,22 @@ private suspend fun PointerInputScope.terminalGestureInterceptor(
                             }
                         }
                     }
+                }
+            }
+
+            // Finger lifted — handle tap (UNDECIDED means no drag/long-press occurred)
+            val sincePinchEnd = System.currentTimeMillis() - lastMultiTouchTime
+            if (mouseMode && kind == GestureKind.UNDECIDED && !longPressHandled && sincePinchEnd > MULTITOUCH_LIFTOFF_MS) {
+                // Tap: send left click (button 0) press + release
+                val size = surfaceSize()
+                if (size.width > 0 && size.height > 0) {
+                    val dims = activeTab.emulator.dimensions
+                    val col = ((startX / size.width) * dims.columns)
+                        .toInt().coerceIn(1, dims.columns)
+                    val row = ((startY / size.height) * dims.rows)
+                        .toInt().coerceIn(1, dims.rows)
+                    activeTab.sendInput(sgrMouseButton(0, col, row, pressed = true))
+                    activeTab.sendInput(sgrMouseButton(0, col, row, pressed = false))
                 }
             }
 

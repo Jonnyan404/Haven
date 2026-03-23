@@ -145,6 +145,7 @@ data class TerminalTab(
     val transportType: String,
     val emulator: TerminalEmulator,
     val mouseMode: StateFlow<Boolean>,
+    val activeMouseMode: StateFlow<Int?>,
     val bracketPasteMode: StateFlow<Boolean>,
     val oscHandler: OscHandler,
     val cwd: StateFlow<String?>,
@@ -226,6 +227,12 @@ class TerminalViewModel @Inject constructor(
 
     fun toggleCtrl() { _ctrlActive.value = !_ctrlActive.value }
     fun toggleAlt() { _altActive.value = !_altActive.value }
+
+    fun setFontSize(sizeSp: Int) {
+        viewModelScope.launch {
+            preferencesRepository.setTerminalFontSize(sizeSp)
+        }
+    }
 
     /** Get VNC connection info for the active terminal tab's SSH host. */
     suspend fun getActiveVncInfo(): VncInfo? {
@@ -518,6 +525,7 @@ class TerminalViewModel @Inject constructor(
                     transportType = "SSH",
                     emulator = emulator,
                     mouseMode = mouseTracker.mouseMode,
+                    activeMouseMode = mouseTracker.activeMouseMode,
                     bracketPasteMode = mouseTracker.bracketPasteMode,
                     oscHandler = oscHandler,
                     cwd = cwdFlow,
@@ -586,6 +594,7 @@ class TerminalViewModel @Inject constructor(
                     transportType = "RETICULUM",
                     emulator = emulator,
                     mouseMode = rnsMouseTracker.mouseMode,
+                    activeMouseMode = rnsMouseTracker.activeMouseMode,
                     bracketPasteMode = rnsMouseTracker.bracketPasteMode,
                     oscHandler = rnsOscHandler,
                     cwd = rnsCwdFlow,
@@ -669,6 +678,7 @@ class TerminalViewModel @Inject constructor(
                     transportType = "MOSH",
                     emulator = emulator,
                     mouseMode = moshMouseTracker.mouseMode,
+                    activeMouseMode = moshMouseTracker.activeMouseMode,
                     bracketPasteMode = moshMouseTracker.bracketPasteMode,
                     oscHandler = moshOscHandler,
                     cwd = moshCwdFlow,
@@ -751,6 +761,7 @@ class TerminalViewModel @Inject constructor(
                     transportType = "ET",
                     emulator = emulator,
                     mouseMode = etMouseTracker.mouseMode,
+                    activeMouseMode = etMouseTracker.activeMouseMode,
                     bracketPasteMode = etMouseTracker.bracketPasteMode,
                     oscHandler = etOscHandler,
                     cwd = etCwdFlow,
@@ -819,6 +830,7 @@ class TerminalViewModel @Inject constructor(
                     transportType = "LOCAL",
                     emulator = emulator,
                     mouseMode = localMouseTracker.mouseMode,
+                    activeMouseMode = localMouseTracker.activeMouseMode,
                     bracketPasteMode = localMouseTracker.bracketPasteMode,
                     oscHandler = localOscHandler,
                     cwd = localCwdFlow,
