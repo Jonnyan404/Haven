@@ -87,6 +87,9 @@ class SettingsViewModel @Inject constructor(
     val showCopyOutputButton: StateFlow<Boolean> = preferencesRepository.showCopyOutputButton
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    val connectionLoggingEnabled: StateFlow<Boolean> = preferencesRepository.connectionLoggingEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
     val terminalFontSize: StateFlow<Int> = preferencesRepository.terminalFontSize
         .stateIn(
             viewModelScope,
@@ -173,6 +176,12 @@ class SettingsViewModel @Inject constructor(
     fun setShowCopyOutputButton(enabled: Boolean) {
         viewModelScope.launch {
             preferencesRepository.setShowCopyOutputButton(enabled)
+        }
+    }
+
+    fun setConnectionLoggingEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesRepository.setConnectionLoggingEnabled(enabled)
         }
     }
 

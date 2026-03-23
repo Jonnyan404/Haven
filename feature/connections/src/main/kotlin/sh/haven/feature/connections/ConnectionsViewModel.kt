@@ -24,6 +24,8 @@ import sh.haven.core.data.db.entities.ConnectionProfile
 import sh.haven.core.data.db.entities.PortForwardRule
 import sh.haven.core.data.db.entities.SshKey
 import sh.haven.core.data.preferences.UserPreferencesRepository
+import sh.haven.core.data.db.entities.ConnectionLog
+import sh.haven.core.data.repository.ConnectionLogRepository
 import sh.haven.core.data.repository.ConnectionRepository
 import sh.haven.core.data.repository.PortForwardRepository
 import sh.haven.core.data.repository.SshKeyRepository
@@ -71,6 +73,7 @@ class ConnectionsViewModel @Inject constructor(
     private val sshKeyRepository: SshKeyRepository,
     private val preferencesRepository: UserPreferencesRepository,
     private val hostKeyVerifier: HostKeyVerifier,
+    private val connectionLogRepository: ConnectionLogRepository,
 ) : ViewModel() {
 
     val connections: StateFlow<List<ConnectionProfile>> = repository.observeAll()
@@ -697,10 +700,12 @@ class ConnectionsViewModel @Inject constructor(
             try {
                 localSessionManager.connectSession(sessionId)
                 repository.markConnected(profile.id)
+                connectionLogRepository.logEvent(profile.id, ConnectionLog.Status.CONNECTED)
                 startForegroundServiceIfNeeded()
                 _navigateToTerminal.value = profile.id
             } catch (e: Exception) {
                 Log.e(TAG, "connectLocal failed: ${e.message}", e)
+                connectionLogRepository.logEvent(profile.id, ConnectionLog.Status.FAILED)
                 localSessionManager.updateStatus(sessionId, LocalSessionManager.SessionState.Status.ERROR)
                 localSessionManager.removeSession(sessionId)
                 _error.value = e.message ?: "Local terminal failed"
@@ -826,6 +831,7 @@ class ConnectionsViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "connectSsh failed for ${profile.label}: ${e.message}", e)
+                connectionLogRepository.logEvent(profile.id, ConnectionLog.Status.FAILED)
                 sshSessionManager.updateStatus(sessionId, SshSessionManager.SessionState.Status.ERROR)
                 sshSessionManager.removeSession(sessionId)
                 // Clean up auto-created jump session if the final host failed
@@ -880,6 +886,7 @@ class ConnectionsViewModel @Inject constructor(
                 }
 
                 repository.markConnected(profile.id)
+                connectionLogRepository.logEvent(profile.id, ConnectionLog.Status.CONNECTED)
                 startForegroundServiceIfNeeded()
                 _navigateToTerminal.value = profile.id
             } catch (e: Exception) {
@@ -1419,6 +1426,7 @@ class ConnectionsViewModel @Inject constructor(
         }
         sshSessionManager.updateStatus(sessionId, SshSessionManager.SessionState.Status.CONNECTED)
         repository.markConnected(profileId)
+        connectionLogRepository.logEvent(profileId, ConnectionLog.Status.CONNECTED)
         startForegroundServiceIfNeeded()
         _navigateToTerminal.value = profileId
     }
@@ -1489,6 +1497,7 @@ class ConnectionsViewModel @Inject constructor(
         }
 
         repository.markConnected(profileId)
+        connectionLogRepository.logEvent(profileId, ConnectionLog.Status.CONNECTED)
         startForegroundServiceIfNeeded()
         _navigateToTerminal.value = profileId
     }
@@ -1561,6 +1570,7 @@ class ConnectionsViewModel @Inject constructor(
         }
 
         repository.markConnected(profile.id)
+        connectionLogRepository.logEvent(profile.id, ConnectionLog.Status.CONNECTED)
         startForegroundServiceIfNeeded()
         _navigateToTerminal.value = profile.id
     }
@@ -1743,6 +1753,7 @@ class ConnectionsViewModel @Inject constructor(
     )
 
     fun disconnect(profileId: String) {
+        viewModelScope.launch { connectionLogRepository.logEvent(profileId, ConnectionLog.Status.DISCONNECTED) }
         sessionManagerRegistry.disconnectProfile(profileId)
         localSessionManager.prootManager.stopVncServer()
         updateServiceNotification()

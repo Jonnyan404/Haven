@@ -1,5 +1,6 @@
 package sh.haven.core.ssh
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
@@ -33,6 +34,7 @@ class NetworkMonitor @Inject constructor(
 
     private var callback: ConnectivityManager.NetworkCallback? = null
 
+    @SuppressLint("MissingPermission") // ACCESS_NETWORK_STATE declared in app manifest
     fun start() {
         if (callback != null) return
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager

@@ -30,6 +30,8 @@ import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.ListAlt
 import androidx.compose.material.icons.filled.ScreenLockPortrait
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Info
@@ -95,7 +97,9 @@ fun SettingsScreen(
     val toolbarLayoutJson by viewModel.toolbarLayoutJson.collectAsState()
     val showSearchButton by viewModel.showSearchButton.collectAsState()
     val showCopyOutputButton by viewModel.showCopyOutputButton.collectAsState()
+    val connectionLoggingEnabled by viewModel.connectionLoggingEnabled.collectAsState()
     val backupStatus by viewModel.backupStatus.collectAsState()
+    var showAuditLog by remember { mutableStateOf(false) }
     var showFontSizeDialog by remember { mutableStateOf(false) }
     var showSessionManagerDialog by remember { mutableStateOf(false) }
     var showThemeDialog by remember { mutableStateOf(false) }
@@ -142,6 +146,11 @@ fun SettingsScreen(
         context.packageManager.getPackageInfo(context.packageName, 0)
     }
 
+    if (showAuditLog) {
+        AuditLogScreen(onBack = { showAuditLog = false })
+        return
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         TopAppBar(title = { Text("Settings") })
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -170,6 +179,21 @@ fun SettingsScreen(
             checked = screenSecurity,
             onCheckedChange = viewModel::setScreenSecurity,
         )
+        SettingsToggleItem(
+            icon = Icons.Filled.History,
+            title = "Connection logging",
+            subtitle = "Record connection events (connect, disconnect, errors). Stored locally, protected by device encryption",
+            checked = connectionLoggingEnabled,
+            onCheckedChange = viewModel::setConnectionLoggingEnabled,
+        )
+        if (connectionLoggingEnabled) {
+            SettingsItem(
+                icon = Icons.Filled.ListAlt,
+                title = "View connection log",
+                subtitle = "Connection history and events",
+                onClick = { showAuditLog = true },
+            )
+        }
         SettingsItem(
             icon = Icons.Filled.Terminal,
             title = "Session persistence",

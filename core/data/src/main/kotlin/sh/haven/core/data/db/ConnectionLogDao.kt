@@ -18,6 +18,12 @@ interface ConnectionLogDao {
     )
     fun observeForProfile(profileId: String, limit: Int = 50): Flow<List<ConnectionLog>>
 
+    @Query("SELECT * FROM connection_logs ORDER BY timestamp DESC LIMIT :limit")
+    fun observeAll(limit: Int = 200): Flow<List<ConnectionLog>>
+
     @Query("DELETE FROM connection_logs WHERE timestamp < :olderThan")
     suspend fun deleteOlderThan(olderThan: Long)
+
+    @Query("DELETE FROM connection_logs")
+    suspend fun deleteAll()
 }

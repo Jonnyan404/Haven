@@ -126,6 +126,7 @@ class ConnectionsViewModelSessionTest {
                 })
             },
             hostKeyVerifier = mockk(relaxed = true),
+            connectionLogRepository = mockk(relaxed = true),
         )
     }
 
