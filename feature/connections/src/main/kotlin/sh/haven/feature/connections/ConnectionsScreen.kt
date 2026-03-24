@@ -29,12 +29,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.Circle
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Password
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SyncAlt
 import androidx.compose.material.icons.filled.Laptop
 import androidx.compose.material.icons.filled.Refresh
@@ -202,6 +204,7 @@ fun ConnectionsScreen(
     var portForwardProfile by remember { mutableStateOf<ConnectionProfile?>(null) }
     var setupDesktopProfile by remember { mutableStateOf<ConnectionProfile?>(null) }
     var quickConnectText by rememberSaveable { mutableStateOf("") }
+    var filterText by rememberSaveable { mutableStateOf("") }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -576,6 +579,28 @@ fun ConnectionsScreen(
                     .padding(horizontal = 16.dp, vertical = 8.dp),
             )
 
+            // Filter/search bar
+            if (connections.isNotEmpty()) {
+                OutlinedTextField(
+                    value = filterText,
+                    onValueChange = { filterText = it },
+                    placeholder = { Text("Filter connections...") },
+                    singleLine = true,
+                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (filterText.isNotEmpty()) {
+                            IconButton(onClick = { filterText = "" }) {
+                                Icon(Icons.Filled.Clear, contentDescription = "Clear filter")
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 8.dp),
+                )
+            }
+
             // Linux VM card — shown when Terminal app is installed
             if (localVmStatus.terminalAppInstalled) {
                 LinuxVmCard(
@@ -602,7 +627,23 @@ fun ConnectionsScreen(
                 val renderedAsChild = dependentsByParent.values.flatten().map { it.id }.toSet()
 
                 // Top-level: no jump host, or jump host not in saved profiles (orphan)
-                val topLevel = connections.filter { it.id !in renderedAsChild }
+                val allTopLevel = connections.filter { it.id !in renderedAsChild }
+
+                // Filter by search text (match label, host, username)
+                val isFiltering = filterText.isNotBlank()
+                val topLevel = if (!isFiltering) {
+                    allTopLevel
+                } else {
+                    val query = filterText.lowercase()
+                    fun matchesFilter(p: ConnectionProfile): Boolean =
+                        p.label.lowercase().contains(query) ||
+                            p.host.lowercase().contains(query) ||
+                            p.username.lowercase().contains(query)
+                    allTopLevel.filter { parent ->
+                        matchesFilter(parent) ||
+                            dependentsByParent[parent.id]?.any { matchesFilter(it) } == true
+                    }
+                }
 
                 // Drag-to-reorder state
                 var draggedId by remember { mutableStateOf<String?>(null) }
@@ -614,13 +655,18 @@ fun ConnectionsScreen(
                     reorderedIds.clear()
                     reorderedIds.addAll(topLevelIds)
                 }
-                val orderedTopLevel = reorderedIds.mapNotNull { id -> topLevel.find { it.id == id } }
+                // When filtering, show filtered list directly; otherwise use reorder list
+                val orderedTopLevel = if (isFiltering) {
+                    topLevel
+                } else {
+                    reorderedIds.mapNotNull { id -> topLevel.find { it.id == id } }
+                }
                 val lazyListState = rememberLazyListState()
 
                 LazyColumn(state = lazyListState, modifier = Modifier.fillMaxSize()) {
                     orderedTopLevel.forEach { profile ->
                         item(key = profile.id) {
-                            val isDragged = draggedId == profile.id
+                            val isDragged = !isFiltering && draggedId == profile.id
                             ConnectionTreeItem(
                                 profile = profile,
                                 indent = 0,
@@ -644,50 +690,55 @@ fun ConnectionsScreen(
                                 onLaunchDesktop = { viewModel.launchDesktop(profile) },
                                 isDesktopInstalled = viewModel.isDesktopInstalled,
                                 isLaunchingDesktop = launchingDesktop,
-                                dragModifier = Modifier
+                                enableDrag = !isFiltering,
+                                dragModifier = if (!isFiltering) Modifier
                                     .zIndex(if (isDragged) 1f else 0f)
                                     .offset(
                                         y = with(LocalDensity.current) {
                                             if (isDragged) dragOffset.roundToInt().toDp() else 0.dp
                                         },
-                                    ),
+                                    ) else Modifier,
                                 onDragStart = {
-                                    draggedId = profile.id
-                                    dragOffset = 0f
+                                    if (!isFiltering) {
+                                        draggedId = profile.id
+                                        dragOffset = 0f
+                                    }
                                 },
                                 onDrag = { delta ->
-                                    dragOffset += delta
-                                    val fromIdx = reorderedIds.indexOf(profile.id)
-                                    if (fromIdx < 0) return@ConnectionTreeItem
-                                    val visibleItems = lazyListState.layoutInfo.visibleItemsInfo
-                                    val draggedInfo = visibleItems.find { it.key == profile.id }
-                                        ?: return@ConnectionTreeItem
-                                    // Use actual layout distance between top-level items
-                                    // (accounts for nested children between them)
-                                    if (dragOffset > 0 && fromIdx < reorderedIds.lastIndex) {
-                                        val nextInfo = visibleItems.find { it.key == reorderedIds[fromIdx + 1] }
-                                        if (nextInfo != null) {
-                                            val dist = nextInfo.offset - draggedInfo.offset
-                                            if (dragOffset > dist / 2) {
-                                                reorderedIds.add(fromIdx + 1, reorderedIds.removeAt(fromIdx))
-                                                dragOffset -= dist
+                                    if (!isFiltering) {
+                                        dragOffset += delta
+                                        val fromIdx = reorderedIds.indexOf(profile.id)
+                                        if (fromIdx < 0) return@ConnectionTreeItem
+                                        val visibleItems = lazyListState.layoutInfo.visibleItemsInfo
+                                        val draggedInfo = visibleItems.find { it.key == profile.id }
+                                            ?: return@ConnectionTreeItem
+                                        if (dragOffset > 0 && fromIdx < reorderedIds.lastIndex) {
+                                            val nextInfo = visibleItems.find { it.key == reorderedIds[fromIdx + 1] }
+                                            if (nextInfo != null) {
+                                                val dist = nextInfo.offset - draggedInfo.offset
+                                                if (dragOffset > dist / 2) {
+                                                    reorderedIds.add(fromIdx + 1, reorderedIds.removeAt(fromIdx))
+                                                    dragOffset -= dist
+                                                }
                                             }
-                                        }
-                                    } else if (dragOffset < 0 && fromIdx > 0) {
-                                        val prevInfo = visibleItems.find { it.key == reorderedIds[fromIdx - 1] }
-                                        if (prevInfo != null) {
-                                            val dist = draggedInfo.offset - prevInfo.offset
-                                            if (dragOffset < -dist / 2) {
-                                                reorderedIds.add(fromIdx - 1, reorderedIds.removeAt(fromIdx))
-                                                dragOffset += dist
+                                        } else if (dragOffset < 0 && fromIdx > 0) {
+                                            val prevInfo = visibleItems.find { it.key == reorderedIds[fromIdx - 1] }
+                                            if (prevInfo != null) {
+                                                val dist = draggedInfo.offset - prevInfo.offset
+                                                if (dragOffset < -dist / 2) {
+                                                    reorderedIds.add(fromIdx - 1, reorderedIds.removeAt(fromIdx))
+                                                    dragOffset += dist
+                                                }
                                             }
                                         }
                                     }
                                 },
                                 onDragEnd = {
-                                    draggedId = null
-                                    dragOffset = 0f
-                                    viewModel.reorderConnections(reorderedIds.toList())
+                                    if (!isFiltering) {
+                                        draggedId = null
+                                        dragOffset = 0f
+                                        viewModel.reorderConnections(reorderedIds.toList())
+                                    }
                                 },
                             )
                         }
@@ -815,6 +866,7 @@ private fun ConnectionTreeItem(
     onLaunchDesktop: () -> Unit = {},
     isDesktopInstalled: Boolean = false,
     isLaunchingDesktop: Boolean = false,
+    enableDrag: Boolean = true,
     dragModifier: Modifier = Modifier,
     onDragStart: () -> Unit = {},
     onDrag: (Float) -> Unit = {},
@@ -855,8 +907,8 @@ private fun ConnectionTreeItem(
 
     Box(modifier = dragModifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            // Drag handle for top-level items
-            if (indent == 0) {
+            // Drag handle for top-level items (hidden when filtering)
+            if (indent == 0 && enableDrag) {
                 val currentOnDragStart by rememberUpdatedState(onDragStart)
                 val currentOnDrag by rememberUpdatedState(onDrag)
                 val currentOnDragEnd by rememberUpdatedState(onDragEnd)
@@ -937,12 +989,16 @@ private fun ConnectionTreeItem(
                             tint = Color(0xFFF44336),
                             modifier = Modifier.size(12.dp),
                         )
-                        else -> Icon(
-                            Icons.Filled.Circle,
-                            contentDescription = "Disconnected",
-                            tint = MaterialTheme.colorScheme.outline,
-                            modifier = Modifier.size(12.dp),
-                        )
+                        else -> {
+                            val tagColor = if (profile.colorTag in 1..PROFILE_COLORS.size)
+                                PROFILE_COLORS[profile.colorTag - 1] else MaterialTheme.colorScheme.outline
+                            Icon(
+                                Icons.Filled.Circle,
+                                contentDescription = "Disconnected",
+                                tint = tagColor,
+                                modifier = Modifier.size(12.dp),
+                            )
+                        }
                     }
                 },
                 trailingContent = if (profile.isLocal) {{

@@ -1,6 +1,10 @@
 package sh.haven.feature.connections
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -12,10 +16,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Storage
@@ -35,15 +41,30 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import sh.haven.core.data.db.entities.ConnectionProfile
+
+/** Profile group colors — matches PROFILE_COLORS in ConnectionsScreen. */
+private val EDIT_DIALOG_COLORS = listOf(
+    Color(0xFF42A5F5), // blue
+    Color(0xFF66BB6A), // green
+    Color(0xFFFF7043), // orange
+    Color(0xFFAB47BC), // purple
+    Color(0xFFFFCA28), // amber
+    Color(0xFF26C6DA), // cyan
+    Color(0xFFEF5350), // red
+    Color(0xFF8D6E63), // brown
+)
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -84,6 +105,7 @@ fun ConnectionEditDialog(
         else -> "SSH"
     }
     var label by rememberSaveable { mutableStateOf(existing?.label ?: "") }
+    var colorTag by rememberSaveable { mutableIntStateOf(existing?.colorTag ?: 0) }
     var host by rememberSaveable { mutableStateOf(existing?.host ?: "") }
     var port by rememberSaveable {
         mutableStateOf(
@@ -207,6 +229,63 @@ fun ConnectionEditDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Spacer(Modifier.height(8.dp))
+
+                // Color tag picker
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Color", style = MaterialTheme.typography.bodyMedium)
+                    // "None" option
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .border(
+                                width = if (colorTag == 0) 2.dp else 1.dp,
+                                color = if (colorTag == 0) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.outline,
+                                shape = CircleShape,
+                            )
+                            .clickable { colorTag = 0 },
+                    ) {
+                        if (colorTag == 0) {
+                            Icon(
+                                Icons.Filled.Check,
+                                contentDescription = "None",
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                    EDIT_DIALOG_COLORS.forEachIndexed { index, color ->
+                        val tag = index + 1
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(color, CircleShape)
+                                .then(
+                                    if (colorTag == tag) Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, CircleShape)
+                                    else Modifier,
+                                )
+                                .clickable { colorTag = tag },
+                        ) {
+                            if (colorTag == tag) {
+                                Icon(
+                                    Icons.Filled.Check,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = Color.White,
+                                )
+                            }
+                        }
+                    }
+                }
                 Spacer(Modifier.height(8.dp))
 
                 if (connectionType == "LOCAL") {
@@ -1177,6 +1256,7 @@ fun ConnectionEditDialog(
                             port = 0,
                             username = "",
                             connectionType = "LOCAL",
+                            colorTag = colorTag,
                         )
                     } else if (connectionType == "VNC") {
                         val vncPortInt = port.toIntOrNull() ?: 5900
@@ -1192,6 +1272,7 @@ fun ConnectionEditDialog(
                             connectionType = "VNC",
                             vncPort = vncPortInt,
                             vncPassword = vncPassword.ifBlank { null },
+                            colorTag = colorTag,
                         )
                     } else if (connectionType == "RDP") {
                         val rdpPortInt = port.toIntOrNull() ?: 3389
@@ -1211,6 +1292,7 @@ fun ConnectionEditDialog(
                             rdpDomain = rdpDomain.ifBlank { null },
                             rdpSshForward = rdpSshForward,
                             rdpSshProfileId = if (rdpSshForward) rdpSshProfileId else null,
+                            colorTag = colorTag,
                         )
                     } else if (connectionType == "SMB") {
                         val smbPortInt = port.toIntOrNull() ?: 445
@@ -1230,6 +1312,7 @@ fun ConnectionEditDialog(
                             smbDomain = smbDomain.ifBlank { null },
                             smbSshForward = smbSshForward,
                             smbSshProfileId = if (smbSshForward) smbSshProfileId else null,
+                            colorTag = colorTag,
                         )
                     } else if (connectionType == "SSH") {
                         val portInt = port.toIntOrNull() ?: 22
@@ -1255,6 +1338,7 @@ fun ConnectionEditDialog(
                             useMosh = selectedTransport == "MOSH",
                             useEternalTerminal = selectedTransport == "ET",
                             etPort = etPortInt,
+                            colorTag = colorTag,
                         )
                     } else {
                         val savedHost = if (localSideband) "127.0.0.1" else rnsHost
@@ -1273,6 +1357,7 @@ fun ConnectionEditDialog(
                             destinationHash = destinationHash.lowercase(),
                             reticulumHost = savedHost,
                             reticulumPort = savedPort,
+                            colorTag = colorTag,
                         )
                     }
                     onSave(profile)
