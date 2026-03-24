@@ -133,6 +133,12 @@ class ProotManager @Inject constructor(
                 else -> throw IllegalStateException("Unsupported ABI: ${Build.SUPPORTED_ABIS.toList()}")
             }
 
+            val expectedSha256 = when (arch) {
+                "aarch64" -> "ead8a4b37867bd19e7417dd078748e2312c0aea364403d96758d63ea8ff261ea"
+                "x86_64" -> "1a694899e406ce55d32334c47ac0b2efb6c06d7e878102d1840892ad44cd5239"
+                else -> throw IllegalStateException("No checksum for arch: $arch")
+            }
+
             val url = "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/$arch/alpine-minirootfs-3.21.3-$arch.tar.gz"
             val tarball = File(context.cacheDir, "alpine-minirootfs.tar.gz")
 
@@ -158,6 +164,27 @@ class ProotManager @Inject constructor(
                     }
                 }
                 Log.d(TAG, "Download complete: ${tarball.length()} bytes")
+            }
+
+            // Verify SHA-256 checksum
+            withContext(Dispatchers.IO) {
+                val digest = java.security.MessageDigest.getInstance("SHA-256")
+                tarball.inputStream().buffered().use { input ->
+                    val buf = ByteArray(8192)
+                    var n: Int
+                    while (input.read(buf).also { n = it } != -1) {
+                        digest.update(buf, 0, n)
+                    }
+                }
+                val actualSha256 = digest.digest().joinToString("") { "%02x".format(it) }
+                if (actualSha256 != expectedSha256) {
+                    tarball.delete()
+                    throw SecurityException(
+                        "Rootfs checksum mismatch — expected $expectedSha256 but got $actualSha256. " +
+                            "Download deleted. This may indicate a corrupted download or tampered file."
+                    )
+                }
+                Log.d(TAG, "SHA-256 verified: $actualSha256")
             }
 
             // Extract
