@@ -124,7 +124,7 @@ build_for_arch() {
             proot 2>&1 | tail -15
 
         "$STRIP" proot
-        file proot
+        file proot 2>/dev/null || true
         ls -la proot
     )
 
