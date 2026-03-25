@@ -9,8 +9,9 @@ import java.util.Base64
 
 /**
  * Parses SSH private key files using JSch.
- * Supports PEM (PKCS#8, PKCS#1, EC), OpenSSH, and PuTTY PPK formats.
+ * Supports PEM (PKCS#8, PKCS#1, EC), OpenSSH, PuTTY PPK, and Dropbear formats.
  * The original file bytes are stored as-is — JSch parses them again at connect time.
+ * Dropbear keys are converted to OpenSSH format on import.
  */
 object SshKeyImporter {
 
@@ -40,9 +41,16 @@ object SshKeyImporter {
             throw SkKeyDetectedException(fileBytes)
         }
 
+        // Convert Dropbear keys to OpenSSH format (JSch doesn't support Dropbear)
+        val keyBytes = if (DropbearKeyConverter.isDropbearKey(fileBytes)) {
+            DropbearKeyConverter.toOpenSsh(fileBytes)
+        } else {
+            fileBytes
+        }
+
         val jsch = JSch()
         val kpair = try {
-            KeyPair.load(jsch, fileBytes, null)
+            KeyPair.load(jsch, keyBytes, null)
         } catch (e: Exception) {
             throw IllegalArgumentException("Unrecognised key format: ${e.message}", e)
         }
@@ -70,6 +78,7 @@ object SshKeyImporter {
 
             // Store decrypted key so passphrase isn't needed at connect time.
             // For unencrypted keys, store the original bytes unchanged.
+            // For Dropbear keys, store the converted OpenSSH bytes (JSch can't parse Dropbear).
             val storedBytes = if (passphrase != null) {
                 try {
                     val out = ByteArrayOutputStream()
@@ -81,7 +90,7 @@ object SshKeyImporter {
                     extractEd25519KeyMaterial(kpair) ?: fileBytes
                 }
             } else {
-                fileBytes
+                keyBytes  // use converted bytes for Dropbear, original for others
             }
 
             return ImportedKey(
