@@ -1,6 +1,8 @@
 package sh.haven.feature.terminal
 
 import android.app.Activity
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.input.pointer.pointerInteropFilter
@@ -100,6 +102,8 @@ data class ToolbarCallbacks(
     val onToggleAlt: () -> Unit,
     val onToggleShift: () -> Unit,
     val onShiftUsed: () -> Unit,
+    val bracketPasteMode: Boolean = false,
+    val clipboardManager: ClipboardManager? = null,
 )
 
 val LocalToolbarCallbacks = compositionLocalOf<ToolbarCallbacks> {
@@ -116,6 +120,7 @@ fun KeyboardToolbar(
     altActive: Boolean = false,
     bracketPasteMode: Boolean = false,
     layout: ToolbarLayout = ToolbarLayout.DEFAULT,
+    navBlockMode: sh.haven.core.data.preferences.NavBlockMode = sh.haven.core.data.preferences.NavBlockMode.ALIGNED,
     onToggleCtrl: () -> Unit = {},
     onToggleAlt: () -> Unit = {},
     onVncTap: (() -> Unit)? = null,
@@ -130,6 +135,10 @@ fun KeyboardToolbar(
     val view = LocalView.current
     val imeVisible = WindowInsets.isImeVisible
 
+    val clipboardManager = remember {
+        view.context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+    }
+
     val callbacks = ToolbarCallbacks(
         onSendBytes = onSendBytes,
         onDispatchKey = onDispatchKey,
@@ -137,6 +146,8 @@ fun KeyboardToolbar(
         onToggleAlt = onToggleAlt,
         onToggleShift = { shiftActive = !shiftActive },
         onShiftUsed = { shiftActive = false },
+        bracketPasteMode = bracketPasteMode,
+        clipboardManager = clipboardManager,
     )
 
     CompositionLocalProvider(LocalToolbarCallbacks provides callbacks) {
@@ -166,7 +177,7 @@ fun KeyboardToolbar(
                         onPaste = onPaste,
                     )
                 }
-            } else if (layout.rows.size >= 2) {
+            } else if (layout.rows.size >= 2 && navBlockMode == sh.haven.core.data.preferences.NavBlockMode.ALIGNED) {
                 AlignedToolbarContent(
                     layout = layout,
                     focusRequester = focusRequester,
@@ -406,18 +417,32 @@ private fun RenderItem(
             view = view,
         )
         is ToolbarItem.Custom -> {
-            SymbolButton(item.label) {
-                val bytes = item.send.toByteArray()
-                if (ctrlActive || altActive) {
-                    if (item.send.length == 1) {
-                        sendChar(item.send[0], ctrlActive, altActive, cb.onSendBytes)
+            if (item.send == "PASTE") {
+                SymbolButton(item.label) {
+                    val text = cb.clipboardManager?.primaryClip
+                        ?.getItemAt(0)?.text?.toString()
+                    if (text != null) {
+                        if (cb.bracketPasteMode) {
+                            cb.onSendBytes(("\u001b[200~$text\u001b[201~").toByteArray())
+                        } else {
+                            cb.onSendBytes(text.toByteArray())
+                        }
+                    }
+                }
+            } else {
+                SymbolButton(item.label) {
+                    val bytes = item.send.toByteArray()
+                    if (ctrlActive || altActive) {
+                        if (item.send.length == 1) {
+                            sendChar(item.send[0], ctrlActive, altActive, cb.onSendBytes)
+                        } else {
+                            cb.onSendBytes(bytes)
+                        }
+                        if (ctrlActive) cb.onToggleCtrl()
+                        if (altActive) cb.onToggleAlt()
                     } else {
                         cb.onSendBytes(bytes)
                     }
-                    if (ctrlActive) cb.onToggleCtrl()
-                    if (altActive) cb.onToggleAlt()
-                } else {
-                    cb.onSendBytes(bytes)
                 }
             }
         }

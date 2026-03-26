@@ -27,6 +27,7 @@ class UserPreferencesRepository @Inject constructor(
     private val toolbarRow1Key = stringPreferencesKey("toolbar_row1") // legacy
     private val toolbarRow2Key = stringPreferencesKey("toolbar_row2") // legacy
     private val toolbarLayoutKey = stringPreferencesKey("toolbar_layout")
+    private val navBlockModeKey = stringPreferencesKey("nav_block_mode")
     private val sessionCommandOverrideKey = stringPreferencesKey("session_command_override")
     private val sftpSortModeKey = stringPreferencesKey("sftp_sort_mode")
     private val lockTimeoutKey = stringPreferencesKey("lock_timeout")
@@ -228,6 +229,16 @@ class UserPreferencesRepository @Inject constructor(
             prefs.remove(toolbarRow1Key)
             prefs.remove(toolbarRow2Key)
             prefs.remove(toolbarRowsKey)
+        }
+    }
+
+    val navBlockMode: Flow<NavBlockMode> = dataStore.data.map { prefs ->
+        prefs[navBlockModeKey]?.let { NavBlockMode.fromId(it) } ?: NavBlockMode.ALIGNED
+    }
+
+    suspend fun setNavBlockMode(mode: NavBlockMode) {
+        dataStore.edit { prefs ->
+            prefs[navBlockModeKey] = mode.id
         }
     }
 

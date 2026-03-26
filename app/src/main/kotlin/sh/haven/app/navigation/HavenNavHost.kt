@@ -65,6 +65,8 @@ fun HavenNavHost(
         .collectAsState(initial = UserPreferencesRepository.DEFAULT_FONT_SIZE)
     val toolbarLayout by preferencesRepository.toolbarLayout
         .collectAsState(initial = sh.haven.core.data.preferences.ToolbarLayout.DEFAULT)
+    val navBlockMode by preferencesRepository.navBlockMode
+        .collectAsState(initial = sh.haven.core.data.preferences.NavBlockMode.ALIGNED)
     val showSearchButton by preferencesRepository.showSearchButton
         .collectAsState(initial = false)
     val showCopyOutputButton by preferencesRepository.showCopyOutputButton
@@ -187,6 +189,7 @@ fun HavenNavHost(
                         isActive = pagerState.settledPage == pageOf(Screen.Terminal),
                         fontSize = terminalFontSize,
                         toolbarLayout = toolbarLayout,
+                        navBlockMode = navBlockMode,
                         showSearchButton = showSearchButton,
                         showCopyOutputButton = showCopyOutputButton,
                         mouseInputEnabled = mouseInputEnabled,

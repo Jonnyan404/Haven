@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import sh.haven.core.data.backup.BackupService
+import sh.haven.core.data.preferences.NavBlockMode
 import sh.haven.core.data.preferences.ToolbarLayout
 import sh.haven.core.data.preferences.UserPreferencesRepository
 import sh.haven.core.security.BiometricAuthenticator
@@ -164,6 +165,13 @@ class SettingsViewModel @Inject constructor(
             ToolbarLayout.DEFAULT.toJson(),
         )
 
+    val navBlockMode: StateFlow<NavBlockMode> = preferencesRepository.navBlockMode
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            NavBlockMode.ALIGNED,
+        )
+
     fun setBiometricEnabled(enabled: Boolean) {
         viewModelScope.launch {
             preferencesRepository.setBiometricEnabled(enabled)
@@ -245,6 +253,12 @@ class SettingsViewModel @Inject constructor(
     fun setToolbarLayoutJson(json: String) {
         viewModelScope.launch {
             preferencesRepository.setToolbarLayoutJson(json)
+        }
+    }
+
+    fun setNavBlockMode(mode: NavBlockMode) {
+        viewModelScope.launch {
+            preferencesRepository.setNavBlockMode(mode)
         }
     }
 }

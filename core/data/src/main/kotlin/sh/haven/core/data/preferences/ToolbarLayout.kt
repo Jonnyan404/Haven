@@ -37,6 +37,30 @@ sealed class ToolbarItem {
  * - String elements reference built-in keys by ID (see [ToolbarKey.id]).
  * - Object elements define custom keys: `{"label": "...", "send": "..."}`.
  */
+/** How the navigation keys (arrows, Home/End, PgUp/PgDn) are rendered on the toolbar. */
+enum class NavBlockMode(val id: String, val label: String) {
+    /** 2x4 aligned grid block (default). */
+    ALIGNED("aligned", "Aligned block"),
+    /** Inline with other keys — can be freely reordered. */
+    INLINE("inline", "Inline keys");
+
+    companion object {
+        fun fromId(id: String): NavBlockMode? = entries.find { it.id == id }
+    }
+}
+
+data class MacroPreset(val label: String, val send: String, val description: String)
+
+val MACRO_PRESETS = listOf(
+    MacroPreset("^C", "\u0003", "Ctrl+C (interrupt)"),
+    MacroPreset("^D", "\u0004", "Ctrl+D (EOF)"),
+    MacroPreset("^Z", "\u001a", "Ctrl+Z (suspend)"),
+    MacroPreset("^L", "\u000c", "Ctrl+L (clear)"),
+    MacroPreset("^A", "\u0001", "Ctrl+A (tmux prefix)"),
+    MacroPreset("\u21e7Tab", "\u001b[Z", "Shift+Tab"),
+    MacroPreset("Paste", "PASTE", "Paste clipboard"),
+)
+
 data class ToolbarLayout(val rows: List<List<ToolbarItem>>) {
 
     val row1: List<ToolbarItem> get() = rows.getOrElse(0) { emptyList() }

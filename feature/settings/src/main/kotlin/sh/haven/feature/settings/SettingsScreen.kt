@@ -24,11 +24,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.History
@@ -43,10 +46,15 @@ import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -61,6 +69,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -77,6 +86,8 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import sh.haven.core.data.preferences.MACRO_PRESETS
+import sh.haven.core.data.preferences.NavBlockMode
 import sh.haven.core.data.preferences.ToolbarItem
 import sh.haven.core.data.preferences.ToolbarKey
 import sh.haven.core.data.preferences.ToolbarLayout
@@ -96,6 +107,7 @@ fun SettingsScreen(
     val colorScheme by viewModel.terminalColorScheme.collectAsState()
     val toolbarLayout by viewModel.toolbarLayout.collectAsState()
     val toolbarLayoutJson by viewModel.toolbarLayoutJson.collectAsState()
+    val navBlockMode by viewModel.navBlockMode.collectAsState()
     val showSearchButton by viewModel.showSearchButton.collectAsState()
     val showCopyOutputButton by viewModel.showCopyOutputButton.collectAsState()
     val connectionLoggingEnabled by viewModel.connectionLoggingEnabled.collectAsState()
@@ -422,6 +434,7 @@ fun SettingsScreen(
         ToolbarConfigDialog(
             layout = toolbarLayout,
             layoutJson = toolbarLayoutJson,
+            navBlockMode = navBlockMode,
             onDismiss = { showToolbarConfigDialog = false },
             onSaveLayout = { layout ->
                 viewModel.setToolbarLayout(layout)
@@ -431,6 +444,7 @@ fun SettingsScreen(
                 viewModel.setToolbarLayoutJson(json)
                 showToolbarConfigDialog = false
             },
+            onNavBlockModeChange = { viewModel.setNavBlockMode(it) },
         )
     }
 
@@ -927,9 +941,11 @@ private enum class KeyAssignment { ROW1, ROW2, OFF }
 private fun ToolbarConfigDialog(
     layout: ToolbarLayout,
     layoutJson: String,
+    navBlockMode: NavBlockMode,
     onDismiss: () -> Unit,
     onSaveLayout: (ToolbarLayout) -> Unit,
     onSaveJson: (String) -> Unit,
+    onNavBlockModeChange: (NavBlockMode) -> Unit,
 ) {
     var advancedMode by remember { mutableStateOf(false) }
 
@@ -943,19 +959,28 @@ private fun ToolbarConfigDialog(
     } else {
         ToolbarSimpleEditor(
             layout = layout,
+            navBlockMode = navBlockMode,
             onDismiss = onDismiss,
             onSave = onSaveLayout,
             onAdvancedMode = { advancedMode = true },
+            onNavBlockModeChange = onNavBlockModeChange,
         )
     }
 }
 
+private data class CustomKeyState(
+    val item: ToolbarItem.Custom,
+    val row: KeyAssignment,
+)
+
 @Composable
 private fun ToolbarSimpleEditor(
     layout: ToolbarLayout,
+    navBlockMode: NavBlockMode,
     onDismiss: () -> Unit,
     onSave: (ToolbarLayout) -> Unit,
     onAdvancedMode: () -> Unit,
+    onNavBlockModeChange: (NavBlockMode) -> Unit,
 ) {
     // Build assignment map from current layout (built-in keys only)
     val row1BuiltIns = remember(layout) {
@@ -977,9 +1002,39 @@ private fun ToolbarSimpleEditor(
         )
     }
 
-    // Track whether layout has custom keys (can't be edited in simple mode)
-    val hasCustomKeys = remember(layout) {
-        layout.rows.any { row -> row.any { it is ToolbarItem.Custom } }
+    // Custom keys state — built from current layout
+    val customKeys = remember(layout) {
+        mutableStateListOf<CustomKeyState>().apply {
+            layout.row1.filterIsInstance<ToolbarItem.Custom>().forEach {
+                add(CustomKeyState(it, KeyAssignment.ROW1))
+            }
+            layout.row2.filterIsInstance<ToolbarItem.Custom>().forEach {
+                add(CustomKeyState(it, KeyAssignment.ROW2))
+            }
+        }
+    }
+
+    // Dialog state for creating/editing custom keys
+    var showCustomKeyDialog by remember { mutableStateOf(false) }
+    var editingCustomKeyIndex by remember { mutableStateOf(-1) }
+
+    if (showCustomKeyDialog) {
+        CustomKeyDialog(
+            initial = if (editingCustomKeyIndex >= 0) customKeys[editingCustomKeyIndex].item else null,
+            onDismiss = {
+                showCustomKeyDialog = false
+                editingCustomKeyIndex = -1
+            },
+            onSave = { newItem ->
+                if (editingCustomKeyIndex >= 0) {
+                    customKeys[editingCustomKeyIndex] = customKeys[editingCustomKeyIndex].copy(item = newItem)
+                } else {
+                    customKeys.add(CustomKeyState(newItem, KeyAssignment.ROW2))
+                }
+                showCustomKeyDialog = false
+                editingCustomKeyIndex = -1
+            },
+        )
     }
 
     AlertDialog(
@@ -994,13 +1049,21 @@ private fun ToolbarSimpleEditor(
                     modifier = Modifier.padding(bottom = 4.dp),
                 )
 
-                if (hasCustomKeys) {
-                    Text(
-                        text = "Custom keys are preserved. Use Edit JSON for full control.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.tertiary,
-                        modifier = Modifier.padding(bottom = 4.dp),
-                    )
+                Text(
+                    "Arrow keys layout",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+                )
+                Row(modifier = Modifier.padding(bottom = 4.dp)) {
+                    NavBlockMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = navBlockMode == mode,
+                            onClick = { onNavBlockModeChange(mode) },
+                            label = { Text(mode.label, fontSize = 11.sp) },
+                            modifier = Modifier.padding(horizontal = 2.dp),
+                        )
+                    }
                 }
 
                 Text(
@@ -1032,13 +1095,48 @@ private fun ToolbarSimpleEditor(
                         onAssign = { assignments = assignments + (key to it) },
                     )
                 }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    "Custom keys",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+
+                customKeys.forEachIndexed { index, ck ->
+                    CustomKeyRow(
+                        state = ck,
+                        onAssign = { customKeys[index] = ck.copy(row = it) },
+                        onEdit = {
+                            editingCustomKeyIndex = index
+                            showCustomKeyDialog = true
+                        },
+                        onDelete = { customKeys.removeAt(index) },
+                    )
+                }
+
+                TextButton(
+                    onClick = {
+                        editingCustomKeyIndex = -1
+                        showCustomKeyDialog = true
+                    },
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Add custom key")
+                }
             }
         },
         confirmButton = {
             TextButton(onClick = {
-                // Preserve custom keys in their original rows
-                val customRow1 = layout.row1.filterIsInstance<ToolbarItem.Custom>()
-                val customRow2 = layout.row2.filterIsInstance<ToolbarItem.Custom>()
+                val customRow1 = customKeys
+                    .filter { it.row == KeyAssignment.ROW1 }
+                    .map { it.item }
+                val customRow2 = customKeys
+                    .filter { it.row == KeyAssignment.ROW2 }
+                    .map { it.item }
                 val newRow1 = ToolbarKey.entries
                     .filter { assignments[it] == KeyAssignment.ROW1 }
                     .map { ToolbarItem.BuiltIn(it) } + customRow1
@@ -1060,6 +1158,7 @@ private fun ToolbarSimpleEditor(
                             else -> KeyAssignment.OFF
                         }
                     }
+                    customKeys.clear()
                 }) {
                     Text("Reset")
                 }
@@ -1072,6 +1171,202 @@ private fun ToolbarSimpleEditor(
             }
         },
     )
+}
+
+@Composable
+private fun CustomKeyRow(
+    state: CustomKeyState,
+    onAssign: (KeyAssignment) -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = state.item.label,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = displaySendSequence(state.item.send),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        KeyAssignment.entries.forEach { option ->
+            FilterChip(
+                selected = state.row == option,
+                onClick = { onAssign(option) },
+                label = {
+                    Text(
+                        when (option) {
+                            KeyAssignment.ROW1 -> "R1"
+                            KeyAssignment.ROW2 -> "R2"
+                            KeyAssignment.OFF -> "Off"
+                        },
+                        fontSize = 11.sp,
+                    )
+                },
+                modifier = Modifier.padding(horizontal = 1.dp),
+            )
+        }
+        IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
+            Icon(Icons.Filled.Edit, contentDescription = "Edit", modifier = Modifier.size(16.dp))
+        }
+        IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+            Icon(Icons.Filled.Delete, contentDescription = "Delete", modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+/** Show a human-readable representation of a send sequence. */
+private fun displaySendSequence(send: String): String {
+    if (send == "PASTE") return "Paste clipboard"
+    return send.map { ch ->
+        when {
+            ch.code < 0x20 -> "\\u${ch.code.toString(16).padStart(4, '0')}"
+            else -> ch.toString()
+        }
+    }.joinToString("")
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CustomKeyDialog(
+    initial: ToolbarItem.Custom? = null,
+    onDismiss: () -> Unit,
+    onSave: (ToolbarItem.Custom) -> Unit,
+) {
+    var label by remember { mutableStateOf(initial?.label ?: "") }
+    var sendText by remember { mutableStateOf(initial?.let { displaySendSequence(it.send) } ?: "") }
+    var presetExpanded by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (initial != null) "Edit custom key" else "Add custom key") },
+        text = {
+            Column {
+                // Preset dropdown
+                ExposedDropdownMenuBox(
+                    expanded = presetExpanded,
+                    onExpandedChange = { presetExpanded = it },
+                ) {
+                    OutlinedTextField(
+                        value = "Presets",
+                        onValueChange = {},
+                        readOnly = true,
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = presetExpanded) },
+                        modifier = Modifier
+                            .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                            .fillMaxWidth(),
+                        textStyle = MaterialTheme.typography.bodySmall,
+                    )
+                    ExposedDropdownMenu(
+                        expanded = presetExpanded,
+                        onDismissRequest = { presetExpanded = false },
+                    ) {
+                        MACRO_PRESETS.forEach { preset ->
+                            DropdownMenuItem(
+                                text = { Text(preset.description) },
+                                onClick = {
+                                    label = preset.label
+                                    sendText = displaySendSequence(preset.send)
+                                    presetExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                OutlinedTextField(
+                    value = label,
+                    onValueChange = { label = it },
+                    label = { Text("Label") },
+                    placeholder = { Text("e.g. ^C, Paste") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedTextField(
+                    value = sendText,
+                    onValueChange = { sendText = it },
+                    label = { Text("Sequence") },
+                    placeholder = { Text("e.g. \\u0003") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                )
+
+                Text(
+                    text = "Use \\u001b for Escape, \\u0003 for Ctrl+C, \\n for Enter",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val parsed = parseSendSequence(sendText)
+                    onSave(ToolbarItem.Custom(label.trim(), parsed))
+                },
+                enabled = label.isNotBlank() && sendText.isNotBlank(),
+            ) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
+}
+
+/** Parse user-entered escape notation back to raw string. */
+private fun parseSendSequence(input: String): String {
+    val sb = StringBuilder()
+    var i = 0
+    while (i < input.length) {
+        if (i + 1 < input.length && input[i] == '\\') {
+            when (input[i + 1]) {
+                'n' -> { sb.append('\n'); i += 2 }
+                't' -> { sb.append('\t'); i += 2 }
+                'r' -> { sb.append('\r'); i += 2 }
+                '\\' -> { sb.append('\\'); i += 2 }
+                'u' -> {
+                    if (i + 5 < input.length) {
+                        val hex = input.substring(i + 2, i + 6)
+                        val code = hex.toIntOrNull(16)
+                        if (code != null) {
+                            sb.append(code.toChar())
+                            i += 6
+                        } else {
+                            sb.append(input[i])
+                            i++
+                        }
+                    } else {
+                        sb.append(input[i])
+                        i++
+                    }
+                }
+                else -> { sb.append(input[i]); i++ }
+            }
+        } else {
+            sb.append(input[i])
+            i++
+        }
+    }
+    return sb.toString()
 }
 
 @Composable
