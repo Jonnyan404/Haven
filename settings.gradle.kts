@@ -69,3 +69,5 @@ include(":core:local")
 include(":feature:settings")
 include(":feature:vnc")
 include(":feature:rdp")
+
+include(":integration-tests")
