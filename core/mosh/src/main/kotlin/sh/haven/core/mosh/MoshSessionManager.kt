@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import java.io.Closeable
 import java.util.UUID
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -39,6 +40,8 @@ class MoshSessionManager @Inject constructor(
         val initialCommand: String? = null,
         /** SSH client kept alive from bootstrap for SFTP access (opaque Closeable). */
         val sshClient: Closeable? = null,
+        /** Buffer for capturing transport logs when verbose logging is enabled. */
+        val verboseBuffer: ConcurrentLinkedQueue<String>? = null,
     ) {
         enum class Status { CONNECTING, CONNECTED, DISCONNECTED, ERROR }
     }
@@ -85,6 +88,7 @@ class MoshSessionManager @Inject constructor(
         cols: Int,
         rows: Int,
         sshClient: Closeable? = null,
+        verboseBuffer: ConcurrentLinkedQueue<String>? = null,
     ) {
         _sessions.value[sessionId]
             ?: throw IllegalStateException("Session $sessionId not found")
@@ -99,6 +103,7 @@ class MoshSessionManager @Inject constructor(
                 moshPort = moshPort,
                 moshKey = moshKey,
                 sshClient = sshClient,
+                verboseBuffer = verboseBuffer,
             ))
         }
     }
@@ -139,6 +144,7 @@ class MoshSessionManager @Inject constructor(
                 Log.d(TAG, "Session $sessionId disconnected")
                 updateStatus(sessionId, SessionState.Status.DISCONNECTED)
             },
+            verboseBuffer = session.verboseBuffer,
         )
 
         _sessions.update { map ->

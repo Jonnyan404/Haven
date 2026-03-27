@@ -7,16 +7,9 @@ import kotlinx.coroutines.SupervisorJob
 import sh.haven.mosh.MoshLogger
 import sh.haven.mosh.transport.MoshTransport
 import java.io.Closeable
+import java.util.concurrent.ConcurrentLinkedQueue
 
 private const val TAG = "MoshSession"
-
-/** Bridges MoshLogger to android.util.Log. */
-private object AndroidMoshLogger : MoshLogger {
-    override fun d(tag: String, msg: String) { Log.d(tag, msg) }
-    override fun e(tag: String, msg: String, throwable: Throwable?) {
-        if (throwable != null) Log.e(tag, msg, throwable) else Log.e(tag, msg)
-    }
-}
 
 /**
  * Bridges a mosh transport session to the terminal emulator.
@@ -37,10 +30,23 @@ class MoshSession(
     private val onDisconnected: ((cleanExit: Boolean) -> Unit)? = null,
     private val initialCols: Int = 80,
     private val initialRows: Int = 24,
+    private val verboseBuffer: ConcurrentLinkedQueue<String>? = null,
 ) : Closeable {
 
     @Volatile
     private var closed = false
+
+    private val startTime = System.currentTimeMillis()
+    private val logger = object : MoshLogger {
+        override fun d(tag: String, msg: String) {
+            Log.d(tag, msg)
+            verboseBuffer?.add("+${System.currentTimeMillis() - startTime}ms [$tag] $msg")
+        }
+        override fun e(tag: String, msg: String, throwable: Throwable?) {
+            if (throwable != null) Log.e(tag, msg, throwable) else Log.e(tag, msg)
+            verboseBuffer?.add("+${System.currentTimeMillis() - startTime}ms [$tag] ERROR: $msg${throwable?.let { " (${it.message})" } ?: ""}")
+        }
+    }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var transport: MoshTransport? = null
@@ -67,7 +73,7 @@ class MoshSession(
                     onDisconnected?.invoke(cleanExit)
                 }
             },
-            logger = AndroidMoshLogger,
+            logger = logger,
             initialCols = initialCols,
             initialRows = initialRows,
         )
@@ -101,6 +107,18 @@ class MoshSession(
         closed = true
         transport?.close()
         transport = null
+    }
+
+    /** Drain captured transport logs. Returns null if verbose logging was not enabled. */
+    fun drainTransportLog(): String? {
+        val buf = verboseBuffer ?: return null
+        if (buf.isEmpty()) return null
+        val sb = StringBuilder()
+        while (true) {
+            val line = buf.poll() ?: break
+            sb.appendLine(line)
+        }
+        return sb.toString().trimEnd()
     }
 
     override fun close() {

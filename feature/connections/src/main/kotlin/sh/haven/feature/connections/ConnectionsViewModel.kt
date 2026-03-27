@@ -1727,6 +1727,7 @@ class ConnectionsViewModel @Inject constructor(
             moshSessionManager.setInitialCommand(sessionId, smCmd(sanitized))
         }
 
+        val transportLogBuffer = if (verboseLogger != null) java.util.concurrent.ConcurrentLinkedQueue<String>() else null
         withContext(Dispatchers.IO) {
             moshSessionManager.connectSession(
                 sessionId = sessionId,
@@ -1736,6 +1737,7 @@ class ConnectionsViewModel @Inject constructor(
                 cols = 80,
                 rows = 24,
                 sshClient = client,
+                verboseBuffer = transportLogBuffer,
             )
         }
 
@@ -1812,6 +1814,7 @@ class ConnectionsViewModel @Inject constructor(
             etSessionManager.setInitialCommand(sessionId, smCmd(sanitized))
         }
 
+        val etTransportLogBuffer = if (verboseLogger != null) java.util.concurrent.ConcurrentLinkedQueue<String>() else null
         withContext(Dispatchers.IO) {
             etSessionManager.connectSession(
                 sessionId = sessionId,
@@ -1820,6 +1823,7 @@ class ConnectionsViewModel @Inject constructor(
                 clientId = etClientId,
                 passkey = etPasskey,
                 sshClient = client,
+                verboseBuffer = etTransportLogBuffer,
             )
         }
 
@@ -2012,7 +2016,16 @@ class ConnectionsViewModel @Inject constructor(
     )
 
     fun disconnect(profileId: String) {
-        viewModelScope.launch { connectionLogRepository.logEvent(profileId, ConnectionLog.Status.DISCONNECTED) }
+        // Drain transport logs before disconnecting (Mosh/ET capture logs in-session)
+        val moshLog = moshSessionManager.getSessionsForProfile(profileId)
+            .mapNotNull { it.moshSession?.drainTransportLog() }
+            .joinToString("\n").ifEmpty { null }
+        val etLog = etSessionManager.getSessionsForProfile(profileId)
+            .mapNotNull { it.etSession?.drainTransportLog() }
+            .joinToString("\n").ifEmpty { null }
+        val transportLog = listOfNotNull(moshLog, etLog).joinToString("\n").ifEmpty { null }
+
+        viewModelScope.launch { connectionLogRepository.logEvent(profileId, ConnectionLog.Status.DISCONNECTED, verboseLog = transportLog) }
         sessionManagerRegistry.disconnectProfile(profileId)
         localSessionManager.prootManager.stopVncServer()
         updateServiceNotification()

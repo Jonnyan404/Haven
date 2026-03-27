@@ -23,11 +23,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.RemoveCircle
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -50,6 +52,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.hilt.navigation.compose.hiltViewModel
 import sh.haven.core.data.db.entities.ConnectionLog
 
@@ -65,6 +70,8 @@ fun AuditLogScreen(
     val verboseLog by viewModel.verboseLog.collectAsState()
     var showClearDialog by remember { mutableStateOf(false) }
     var expandedLogId by remember { mutableStateOf<Long?>(null) }
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
 
     Column(modifier = Modifier.fillMaxSize()) {
         TopAppBar(
@@ -137,6 +144,17 @@ fun AuditLogScreen(
                                 viewModel.loadVerboseLog(item.id)
                             }
                         },
+                        onCopy = { text ->
+                            clipboardManager.setText(AnnotatedString(text))
+                        },
+                        onShare = { text ->
+                            val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(android.content.Intent.EXTRA_SUBJECT, "Haven connection log: ${item.profileLabel}")
+                                putExtra(android.content.Intent.EXTRA_TEXT, text)
+                            }
+                            context.startActivity(android.content.Intent.createChooser(intent, "Share log"))
+                        },
                     )
                 }
             }
@@ -167,6 +185,8 @@ private fun LogItem(
     expanded: Boolean,
     verboseText: String?,
     onToggleExpand: () -> Unit,
+    onShare: ((String) -> Unit)? = null,
+    onCopy: ((String) -> Unit)? = null,
 ) {
     val (icon, tint) = when (item.status) {
         ConnectionLog.Status.CONNECTED -> Icons.Filled.CheckCircle to Color(0xFF4CAF50)
@@ -225,6 +245,21 @@ private fun LogItem(
                             .horizontalScroll(rememberScrollState())
                             .padding(8.dp),
                     )
+                }
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (onCopy != null) {
+                        IconButton(onClick = { onCopy(verboseText) }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Filled.ContentCopy, contentDescription = "Copy log", modifier = Modifier.size(18.dp))
+                        }
+                    }
+                    if (onShare != null) {
+                        IconButton(onClick = { onShare(verboseText) }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Filled.Share, contentDescription = "Share log", modifier = Modifier.size(18.dp))
+                        }
+                    }
                 }
             } else {
                 Text(
